@@ -121,6 +121,14 @@ function setDriverOwner(seat: VehicleSeat, chassis: BasePart) {
 	}
 }
 
+// Wait (briefly) for the arena terrain so the car spawns onto solid ground
+// instead of falling through the void (its spawn is outside the baseplate).
+// Bounded so the car always spawns even if the arena script never signals.
+const waitStart = os.clock();
+while (Workspace.GetAttribute("ArenaReady") !== true && os.clock() - waitStart < 10) {
+	task.wait(0.05);
+}
+
 const car = getOrCreateCarModel();
 const chassis = getOrCreateChassis(car);
 const seat = getOrCreateSeat(car, chassis);
