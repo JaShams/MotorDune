@@ -3,6 +3,6 @@
 /include
 *.tsbuildinfo
 /.claude
-
+concept
 # Windows zone metadata
 *:Zone.Identifier
