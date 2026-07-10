@@ -1,4 +1,4 @@
-import { Players, RunService, Workspace } from "@rbxts/services";
+import { Players, RunService, UserInputService, Workspace } from "@rbxts/services";
 import { CAR_NAME, CHASSIS_NAME, SEAT_NAME } from "shared/carConfig";
 
 const localPlayer = Players.LocalPlayer;
@@ -9,22 +9,38 @@ const seat = car.WaitForChild(SEAT_NAME) as VehicleSeat;
 // ---------------------------------------------------------------------------
 // ARCADE CHASE CAMERA
 // Keeps the camera planted behind the car so you always look where you're
-// going. Swings in behind the heading, pulls back and widens the FOV with
-// speed for that Need-for-Speed sense of velocity.
+// going. Swings in behind the heading at a fixed distance and FOV.
 // ---------------------------------------------------------------------------
-const baseDistance = 15; // how far behind the car the camera sits
-const baseHeight = 6; // how high above the car
-const lookHeight = 3; // aim point height above the car
-const lookAhead = 6; // aim slightly ahead of the car
+const baseDistance = 21; // how far behind the car the camera sits (scaled ~1.4x with the buggy-sized car)
+const baseHeight = 8; // how high above the car
+const lookHeight = 4; // aim point height above the car
+const lookAhead = 8; // aim slightly ahead of the car
 const followStiffness = 10; // how fast the camera swings behind the car (higher = snappier)
-const distancePerSpeed = 0.035; // camera pulls back as you go faster
-const maxExtraDistance = 8;
 const baseFov = 70;
-const fovPerSpeed = 0.12; // FOV widens with speed (sense of speed)
-const maxExtraFov = 18;
+
+const occlusionParams = new RaycastParams();
+occlusionParams.FilterType = Enum.RaycastFilterType.Exclude;
+occlusionParams.RespectCanCollide = true; // pickups and FX don't block the view
 
 let scriptableActive = false;
 let lastFlatHeading = chassis.CFrame.LookVector;
+// Direction the camera currently views the car from. Smoothing this (rather
+// than the camera position) keeps the follow swing soft while the distance to
+// the car stays exactly baseDistance — a position lerp lags a moving target by
+// ~speed/stiffness studs, which reads as zooming out at speed.
+let smoothedViewHeading = lastFlatHeading;
+
+// Hold C to look behind you (the rear threat indicator tells you when to).
+let lookBack = false;
+
+UserInputService.InputBegan.Connect((input, gameProcessed) => {
+	if (gameProcessed) return;
+	if (input.KeyCode === Enum.KeyCode.C) lookBack = true;
+});
+
+UserInputService.InputEnded.Connect((input) => {
+	if (input.KeyCode === Enum.KeyCode.C) lookBack = false;
+});
 
 function getHumanoid() {
 	return localPlayer.Character?.FindFirstChildOfClass("Humanoid");
@@ -54,6 +70,10 @@ RunService.RenderStepped.Connect((dt) => {
 	if (!scriptableActive) {
 		camera.CameraType = Enum.CameraType.Scriptable;
 		scriptableActive = true;
+		// Start directly behind the car so entry doesn't swing from a stale angle.
+		const entryLook = chassis.CFrame.LookVector;
+		const entryFlat = new Vector3(entryLook.X, 0, entryLook.Z);
+		if (entryFlat.Magnitude > 0.05) smoothedViewHeading = entryFlat.Unit;
 	}
 
 	const cf = chassis.CFrame;
@@ -66,17 +86,31 @@ RunService.RenderStepped.Connect((dt) => {
 	const heading = flat.Magnitude > 0.05 ? flat.Unit : lastFlatHeading;
 	lastFlatHeading = heading;
 
-	const speed = chassis.AssemblyLinearVelocity.Magnitude;
-	const distance = baseDistance + math.min(speed * distancePerSpeed, maxExtraDistance);
+	// Looking back mirrors the whole rig through the car: camera out front,
+	// aimed behind — same distances, so releasing C swings straight home.
+	const targetHeading = lookBack ? heading.mul(-1) : heading;
 
-	const desiredPos = carPos.sub(heading.mul(distance)).add(new Vector3(0, baseHeight, 0));
-	const lookAt = carPos.add(heading.mul(lookAhead)).add(new Vector3(0, lookHeight, 0));
-	const desiredCFrame = CFrame.lookAt(desiredPos, lookAt);
+	// Framerate-independent smoothing of the view direction so it feels the
+	// same at any FPS. The look-back flip doubles the stiffness so the 180°
+	// swing reads as a glance (~0.15s) rather than a lazy orbit.
+	const alpha = 1 - math.exp(-followStiffness * (lookBack ? 2 : 1) * dt);
+	let blended = smoothedViewHeading.Lerp(targetHeading, alpha);
+	blended = new Vector3(blended.X, 0, blended.Z);
+	// Opposite headings (the look-back flip) can lerp through zero; snap past.
+	smoothedViewHeading = blended.Magnitude > 0.05 ? blended.Unit : targetHeading;
 
-	// Framerate-independent smoothing so it feels the same at any FPS.
-	const alpha = 1 - math.exp(-followStiffness * dt);
-	camera.CFrame = camera.CFrame.Lerp(desiredCFrame, alpha);
+	const camPos = carPos.sub(smoothedViewHeading.mul(baseDistance)).add(new Vector3(0, baseHeight, 0));
+	const lookAt = carPos.add(smoothedViewHeading.mul(lookAhead)).add(new Vector3(0, lookHeight, 0));
 
-	const desiredFov = baseFov + math.min(speed * fovPerSpeed, maxExtraFov);
-	camera.FieldOfView = camera.FieldOfView + (desiredFov - camera.FieldOfView) * alpha;
+	// Occlusion: the ring spawn sits close to the canyon wall, so the full
+	// follow distance can put the camera inside rock. Cast from just above the
+	// car to the wanted position and pull in to the first collidable hit.
+	const character = localPlayer.Character;
+	occlusionParams.FilterDescendantsInstances = character ? [car, character] : [car];
+	const anchor = carPos.add(new Vector3(0, lookHeight, 0));
+	const hit = Workspace.Raycast(anchor, camPos.sub(anchor), occlusionParams);
+	const finalCamPos = hit ? hit.Position.add(hit.Normal.mul(0.5)) : camPos;
+	camera.CFrame = CFrame.lookAt(finalCamPos, lookAt);
+
+	camera.FieldOfView = baseFov;
 });
