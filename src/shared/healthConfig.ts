@@ -26,6 +26,10 @@ export const WRECK_BONUS_POINTS = 50;
 
 export const LEADERSTATS_NAME = "leaderstats";
 export const POINTS_NAME = "Points";
+// Bots are models rather than Players, so their scoreboard identity and score
+// replicate as attributes on the car model.
+export const BOT_LABEL_ATTR = "BotLabel";
+export const BOT_POINTS_ATTR = "BotPoints";
 
 // Shared health-bar colour ramp, used by both the driver's HUD bar and the
 // overhead billboard bars so a given health reads the same everywhere.

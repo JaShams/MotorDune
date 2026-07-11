@@ -54,7 +54,7 @@ else don't stick. Concretely:
   `groundYAt(x, z)` combines the radial bowl with an undulating 31.5-stud outer
   loop, six descent saddles, broad rollers, swales, and jump ridges. Anything
   placed on the ground (pads, dressing, spawns) uses this same surface.
-- **`healthConfig.ts`** — `MAX_HEALTH = 100`, `Health` attribute name,
+- **`healthConfig.ts`** — `MAX_HEALTH = 100`, health/bot-score attribute names,
   per-powerup damage table, wreck reset delay (3 s), scoring (1 pt/damage +
   50 wreck bonus into standard `leaderstats.Points`), shared `healthColor()`
   ramp used by HUD and overhead bars.
@@ -82,8 +82,9 @@ else don't stick. Concretely:
   top: velocity-led pure-pursuit ramming with sticky targets, separation
   steering, ram-cycle engage/disengage (peel away after a landed hit or a
   stale 6 s chase), escalating stuck recovery (reverse-out → scatter), flip
-  reset, and opportunistic powerup use via the `BotUsePowerup` bindable —
-  the same server-side firing path player remotes hit.
+  reset, replicated `BotLabel`/`BotPoints` scoreboard state, and opportunistic
+  powerup use via the `BotUsePowerup` bindable — the same server-side firing
+  path player remotes hit.
 - **`powerups.server.ts`** (~880 lines) — pickup pads floating over the
   track (collect radius 12, respawn 20 s), the slot inventory, and all effect
   execution: bolt/shunt projectiles, mines, barge AoE, shield/nitro timers
@@ -116,7 +117,8 @@ else don't stick. Concretely:
   from the same spherecast the physics uses, steer on the fronts, roll from
   ground speed, wheelspin/lock-up from `localDrive` when driving.
 - **`hudClient.client.ts`** — ScreenGui: health bar (reads the `Health`
-  attribute), powerup slot display, points/leaderboard.
+  attribute), powerup slot display, points leaderboard combining player
+  `leaderstats` with replicated bot scores.
 - **`powerupClient.client.ts`** — fire input (slot keys, backward-fire for
   directional powerups) → `UsePowerup` remote; applies `Knock` impulses
   locally since this client owns the chassis.

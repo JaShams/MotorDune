@@ -1,6 +1,14 @@
 import { Players, RunService, TweenService, Workspace } from "@rbxts/services";
 import { CAR_NAME, CHASSIS_NAME, SEAT_NAME } from "shared/carConfig";
-import { HEALTH_ATTR, healthColor, LEADERSTATS_NAME, MAX_HEALTH, POINTS_NAME } from "shared/healthConfig";
+import {
+	BOT_LABEL_ATTR,
+	BOT_POINTS_ATTR,
+	HEALTH_ATTR,
+	healthColor,
+	LEADERSTATS_NAME,
+	MAX_HEALTH,
+	POINTS_NAME,
+} from "shared/healthConfig";
 import { FX_FOLDER } from "shared/powerupConfig";
 
 const localPlayer = Players.LocalPlayer;
@@ -90,8 +98,8 @@ refreshHealth();
 car.GetAttributeChangedSignal(HEALTH_ATTR).Connect(refreshHealth);
 
 // ---------------------------------------------------------------------------
-// POINTS LEADERBOARD — top-right list built from every player's leaderstats
-// (the server awards points for damage and wrecks).
+// POINTS LEADERBOARD — top-right list built from player leaderstats and the
+// replicated score attributes on bot cars.
 // ---------------------------------------------------------------------------
 const board = new Instance("Frame");
 board.AnchorPoint = new Vector2(1, 0);
@@ -139,22 +147,42 @@ function getPoints(player: Player) {
 	return points?.IsA("IntValue") ? points.Value : 0;
 }
 
+interface BoardEntry {
+	name: string;
+	points: number;
+	isMe: boolean;
+}
+
+function getBoardEntries() {
+	const entries = new Array<BoardEntry>();
+	for (const player of Players.GetPlayers()) {
+		entries.push({ name: player.DisplayName, points: getPoints(player), isMe: player === localPlayer });
+	}
+	for (const child of Workspace.GetChildren()) {
+		if (!child.IsA("Model") || child.GetAttribute("IsBot") !== true) continue;
+		const name = (child.GetAttribute(BOT_LABEL_ATTR) as string | undefined) ?? child.Name;
+		const points = (child.GetAttribute(BOT_POINTS_ATTR) as number | undefined) ?? 0;
+		entries.push({ name, points, isMe: false });
+	}
+	entries.sort((a, b) => a.points > b.points);
+	return entries;
+}
+
 function rebuildBoard() {
 	for (const child of rowsFrame.GetChildren()) {
 		if (child.IsA("Frame")) child.Destroy();
 	}
 
-	const players = Players.GetPlayers();
-	players.sort((a, b) => getPoints(a) > getPoints(b));
+	const entries = getBoardEntries();
 
-	for (const [index, player] of ipairs(players)) {
+	for (const [index, entry] of ipairs(entries)) {
 		const row = new Instance("Frame");
 		row.BackgroundTransparency = 1;
 		row.Size = new UDim2(1, 0, 0, ROW_HEIGHT);
 		row.LayoutOrder = index;
 		row.Parent = rowsFrame;
 
-		const isMe = player === localPlayer;
+		const isMe = entry.isMe;
 
 		const name = new Instance("TextLabel");
 		name.BackgroundTransparency = 1;
@@ -165,7 +193,7 @@ function rebuildBoard() {
 		name.TextXAlignment = Enum.TextXAlignment.Left;
 		name.TextTruncate = Enum.TextTruncate.AtEnd;
 		name.TextColor3 = isMe ? Color3.fromRGB(255, 220, 60) : new Color3(1, 1, 1);
-		name.Text = `${index}. ${player.DisplayName}`;
+		name.Text = `${index}. ${entry.name}`;
 		name.Parent = row;
 
 		const score = new Instance("TextLabel");
@@ -177,11 +205,11 @@ function rebuildBoard() {
 		score.TextSize = 13;
 		score.TextXAlignment = Enum.TextXAlignment.Right;
 		score.TextColor3 = isMe ? Color3.fromRGB(255, 220, 60) : new Color3(1, 1, 1);
-		score.Text = tostring(getPoints(player));
+		score.Text = tostring(entry.points);
 		score.Parent = row;
 	}
 
-	board.Size = UDim2.fromOffset(210, 30 + players.size() * (ROW_HEIGHT + 2));
+	board.Size = UDim2.fromOffset(210, 30 + entries.size() * (ROW_HEIGHT + 2));
 }
 
 // Leaderstats replicate a beat after the player does; re-render once the
@@ -201,6 +229,23 @@ Players.PlayerAdded.Connect((player) => {
 	rebuildBoard();
 });
 Players.PlayerRemoving.Connect(() => task.defer(rebuildBoard));
+
+function watchBot(car: Model) {
+	if (car.GetAttribute("IsBot") !== true) return;
+	car.GetAttributeChangedSignal(BOT_POINTS_ATTR).Connect(rebuildBoard);
+	car.GetAttributeChangedSignal(BOT_LABEL_ATTR).Connect(rebuildBoard);
+	rebuildBoard();
+}
+
+for (const child of Workspace.GetChildren()) {
+	if (child.IsA("Model")) watchBot(child);
+}
+Workspace.ChildAdded.Connect((child) => {
+	if (child.IsA("Model")) task.defer(() => watchBot(child));
+});
+Workspace.ChildRemoved.Connect((child) => {
+	if (child.IsA("Model") && child.GetAttribute("IsBot") === true) task.defer(rebuildBoard);
+});
 rebuildBoard();
 
 // ---------------------------------------------------------------------------

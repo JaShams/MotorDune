@@ -2,7 +2,7 @@ import { RunService, ServerStorage, Workspace } from "@rbxts/services";
 import { groundY, SPAWN_HEIGHT, SPAWN_RADIUS } from "shared/arenaConfig";
 import { CHASSIS_NAME, MAX_STEER_ANGLE, SEAT_NAME } from "shared/carConfig";
 import { CarDriveInput, CarSim, createCarSim } from "shared/carSim";
-import { HEALTH_ATTR, MAX_HEALTH } from "shared/healthConfig";
+import { BOT_LABEL_ATTR, BOT_POINTS_ATTR, HEALTH_ATTR, MAX_HEALTH } from "shared/healthConfig";
 import { BOT_USE_EVENT, decodeSlot, SLOT_ATTRS } from "shared/powerupConfig";
 import { buildCar, groundedSpawnCFrame, keepInWorld, waitForArenaReady } from "./carFactory";
 
@@ -307,6 +307,8 @@ for (let i = 0; i < BOT_SPECS.size(); i++) {
 		seatDisabled: true, // players can't hop into a bot's seat and fight its driver
 	});
 	car.SetAttribute("IsBot", true);
+	car.SetAttribute(BOT_LABEL_ATTR, spec.label);
+	if (car.GetAttribute(BOT_POINTS_ATTR) === undefined) car.SetAttribute(BOT_POINTS_ATTR, 0);
 	chassis.SetNetworkOwner(undefined); // stays server-simulated; the sim runs here
 	if (!chassis.FindFirstChild("BotTag")) nameTag(chassis, spec.label, spec.color);
 	keepInWorld(chassis, () => groundedSpawnCFrame(ringSpawnCFrame(angle)));

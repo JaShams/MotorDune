@@ -23,6 +23,7 @@ import {
 	USE_REMOTE,
 } from "shared/powerupConfig";
 import {
+	BOT_POINTS_ATTR,
 	HEALTH_ATTR,
 	LEADERSTATS_NAME,
 	MAX_HEALTH,
@@ -149,8 +150,18 @@ function addPoints(player: Player, amount: number) {
 	if (points?.IsA("IntValue")) points.Value += amount;
 }
 
+function addCarPoints(car: Model, amount: number) {
+	const driver = getDriver(car);
+	if (driver) {
+		addPoints(driver, amount);
+	} else if (car.GetAttribute("IsBot") === true) {
+		const points = (car.GetAttribute(BOT_POINTS_ATTR) as number | undefined) ?? 0;
+		car.SetAttribute(BOT_POINTS_ATTR, points + amount);
+	}
+}
+
 // --- Health --------------------------------------------------------------------
-function wreckCar(car: Model, attackerDriver?: Player) {
+function wreckCar(car: Model, attacker?: Model) {
 	const chassis = getChassis(car);
 	if (chassis) {
 		explosionFx(chassis.Position, Color3.fromRGB(255, 120, 30), 18);
@@ -160,7 +171,7 @@ function wreckCar(car: Model, attackerDriver?: Player) {
 	// A wreck dumps the car's held powerups.
 	for (const attr of SLOT_ATTRS) car.SetAttribute(attr, "");
 
-	if (attackerDriver) addPoints(attackerDriver, WRECK_BONUS_POINTS);
+	if (attacker) addCarPoints(attacker, WRECK_BONUS_POINTS);
 
 	task.delay(WRECK_RESET_SECONDS, () => {
 		if (car.IsDescendantOf(game)) car.SetAttribute(HEALTH_ATTR, MAX_HEALTH);
@@ -174,10 +185,10 @@ function damageCar(car: Model, amount: number, attacker?: Model) {
 	const newHealth = math.max(0, health - amount);
 	car.SetAttribute(HEALTH_ATTR, newHealth);
 
-	const attackerDriver = attacker !== undefined && attacker !== car ? getDriver(attacker) : undefined;
-	if (attackerDriver) addPoints(attackerDriver, math.floor(amount));
+	const scoringAttacker = attacker !== undefined && attacker !== car ? attacker : undefined;
+	if (scoringAttacker) addCarPoints(scoringAttacker, math.floor(amount));
 
-	if (newHealth <= 0) wreckCar(car, attackerDriver);
+	if (newHealth <= 0) wreckCar(car, scoringAttacker);
 }
 
 // Physically shove a car. Player-driven chassis are simulated on the driver's
