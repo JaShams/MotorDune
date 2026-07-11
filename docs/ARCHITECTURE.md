@@ -50,11 +50,10 @@ else don't stick. Concretely:
   wheelSpin }`. **Read the header comment block before tuning anything** —
   spring/damper values are mass-scaled and the damper has a documented
   stability ceiling.
-- **`arenaConfig.ts`** — crater height profile as pure math: `groundY(r)`
-  maps distance-from-centre → terrain height (salt-pan basin at −14, flat
-  24-stud track ring at 0 near `FLOOR_RADIUS = 480`, smoothstep bowl up to a
-  +58 rim). Anything placed on the ground (pads, dressing, spawns) uses this
-  instead of raycasting terrain that may still be mid-carve.
+- **`arenaConfig.ts`** — deterministic crater surface as pure math:
+  `groundYAt(x, z)` combines the radial bowl with an undulating 31.5-stud outer
+  loop, six descent saddles, broad rollers, swales, and jump ridges. Anything
+  placed on the ground (pads, dressing, spawns) uses this same surface.
 - **`healthConfig.ts`** — `MAX_HEALTH = 100`, `Health` attribute name,
   per-powerup damage table, wreck reset delay (3 s), scoring (1 pt/damage +
   50 wreck bonus into standard `leaderstats.Points`), shared `healthColor()`
@@ -95,7 +94,7 @@ else don't stick. Concretely:
   the `Knock` remote (player cars).
 - **`arena.server.ts`** (~1360 lines) — builds the whole desert crater
   procedurally at boot with a **deterministic seeded PRNG** (seed 1337):
-  terrain carve following `groundY`, track ring, canyon rock rim, dressing,
+  chunked smooth-terrain voxels sampled from `groundYAt`, canyon rock rim, dressing,
   dust/smoke with a shared `WIND` vector, lighting. Sets
   `Workspace.ArenaReady = true` when the world is solid — car spawning waits
   on this (see the spawn-race known issue in CLAUDE.md).

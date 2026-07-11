@@ -6,7 +6,7 @@ import {
 	CANYON_INNER_RADIUS,
 	FLAT_OUTER,
 	FLOOR_RADIUS,
-	groundY,
+	groundYAt,
 	LAKEBED_DEPTH,
 	LAKEBED_INNER,
 	LAKEBED_OUTER,
@@ -41,6 +41,12 @@ function pick<T>(items: ReadonlyArray<T>): T {
 }
 
 const TWO_PI = math.pi * 2;
+
+function surfacePosition(angle: number, radius: number, yOffset = 0) {
+	const x = math.cos(angle) * radius;
+	const z = math.sin(angle) * radius;
+	return new Vector3(x, groundYAt(x, z) + yOffset, z);
+}
 
 // ---------------------------------------------------------------------------
 // Part helpers.
@@ -209,8 +215,9 @@ function setupLighting() {
 }
 
 // ===========================================================================
-// Terrain ground: a flat dirt plateau with a gentle, smooth dry-lake-bed
-// basin carved into the centre and a pale salt-pan floor at the bottom.
+// Terrain ground: a sampled continuous height field. Terrain's four-stud
+// voxels interpolate the fractional occupancy at the surface, avoiding the
+// concentric ledges produced by stacked FillCylinder cuts.
 // ===========================================================================
 function buildGround() {
 	const terrain = Workspace.Terrain;
@@ -220,7 +227,8 @@ function buildGround() {
 	terrain.SetMaterialColor(Enum.Material.Salt, Color3.fromRGB(208, 198, 172));
 	terrain.SetMaterialColor(Enum.Material.Sandstone, Color3.fromRGB(172, 122, 80));
 
-	// Reset the region so re-runs don't stack old terrain.
+	// Reset and establish the solid distant plateau. The playable square is
+	// replaced below in small chunks to avoid one enormous nested allocation.
 	terrain.FillCylinder(
 		new CFrame(0, BOWL_RIM_HEIGHT / 2, 0),
 		200 + BOWL_RIM_HEIGHT,
@@ -236,71 +244,59 @@ function buildGround() {
 		Enum.Material.Ground,
 	);
 
-	// Hollow the interior FIRST (one fast op): flat floor at Y = 0, open air
-	// above, everywhere the car and player spawn. Only then signal readiness —
-	// the slow cosmetic carving below must never delay or bury the car spawn.
-	const clearTop = BOWL_RIM_HEIGHT + 6;
-	terrain.FillCylinder(new CFrame(0, clearTop / 2, 0), clearTop, FLAT_OUTER, Enum.Material.Air);
-	Workspace.SetAttribute("ArenaReady", true);
+	const resolution = 4;
+	const extent = 660;
+	const chunkSize = 64;
+	const minY = -72;
+	const maxY = 84;
 
-	// Carve the crater sides: shrinking Air cylinders step down the bowl
-	// profile from the rim to the flat track shelf. Terrain smoothing rounds
-	// the steps. All of this is outside the already-cleared interior, and a
-	// failure here can no longer strand the car.
-	const bowlSteps = 48; // fine steps — coarser ones leave visible terrace rings on the slope
-	pcall(() => {
-		for (let i = 0; i <= bowlSteps; i++) {
-			const r = BOWL_RIM_RADIUS - ((BOWL_RIM_RADIUS - FLAT_OUTER) * i) / bowlSteps;
-			const floor = groundY(r);
-			terrain.FillCylinder(new CFrame(0, (clearTop + floor) / 2, 0), clearTop - floor, r, Enum.Material.Air);
+	for (let chunkX = -extent; chunkX < extent; chunkX += chunkSize) {
+		for (let chunkZ = -extent; chunkZ < extent; chunkZ += chunkSize) {
+			const endX = math.min(chunkX + chunkSize, extent);
+			const endZ = math.min(chunkZ + chunkSize, extent);
+			const xCells = (endX - chunkX) / resolution;
+			const zCells = (endZ - chunkZ) / resolution;
+			const yCells = (maxY - minY) / resolution;
+			const materials = new Array<Array<Array<Enum.Material>>>();
+			const occupancy = new Array<Array<Array<number>>>();
+
+			for (let ix = 0; ix < xCells; ix++) {
+				const materialColumn = new Array<Array<Enum.Material>>();
+				const occupancyColumn = new Array<Array<number>>();
+				const x = chunkX + (ix + 0.5) * resolution;
+				for (let iy = 0; iy < yCells; iy++) {
+					const materialRow = new Array<Enum.Material>();
+					const occupancyRow = new Array<number>();
+					const cellBottom = minY + iy * resolution;
+					for (let iz = 0; iz < zCells; iz++) {
+						const z = chunkZ + (iz + 0.5) * resolution;
+						// Smooth terrain's rendered/collision iso-surface sits about half a
+						// voxel above the raw occupancy height. Compensate so raycasts and
+						// the shared analytic placement function agree in world space.
+						const surface = groundYAt(x, z) - resolution / 2;
+						const fill = math.clamp((surface - cellBottom) / resolution, 0, 1);
+						const r = math.sqrt(x * x + z * z);
+						materialRow.push(fill > 0 ? (r < LAKEBED_INNER ? Enum.Material.Salt : Enum.Material.Ground) : Enum.Material.Air);
+						occupancyRow.push(fill);
+					}
+					materialColumn.push(materialRow);
+					occupancyColumn.push(occupancyRow);
+				}
+				materials.push(materialColumn);
+				occupancy.push(occupancyColumn);
+			}
+
+			terrain.WriteVoxels(
+				new Region3(new Vector3(chunkX, minY, chunkZ), new Vector3(endX, maxY, endZ)),
+				resolution,
+				materials,
+				occupancy,
+			);
 		}
-	});
-
-	// Carve the basin: a stack of shrinking Air cylinders forms a gentle cone
-	// from the plateau (Y = 0 at LAKEBED_OUTER) down to a flat bottom
-	// (Y = -LAKEBED_DEPTH inside LAKEBED_INNER). Terrain smoothing rounds it.
-	const steps = 36; // fine steps so the slope smooths into a curve instead of visible terraces
-	for (let i = 1; i <= steps; i++) {
-		const f = i / steps;
-		const radius = LAKEBED_OUTER - (LAKEBED_OUTER - LAKEBED_INNER) * f;
-		const depth = LAKEBED_DEPTH * f;
-		terrain.FillCylinder(new CFrame(0, -depth / 2, 0), depth, radius, Enum.Material.Air);
 	}
 
-	// Gentle mounds on the bowl sides so the slope rolls instead of reading
-	// as a perfect cone. Kept off the driveable surfaces.
-	for (let i = 0; i < 16; i++) {
-		const a = rand() * TWO_PI;
-		const r = range(FLOOR_RADIUS + 24, CANYON_INNER_RADIUS + 120);
-		const bumpR = range(16, 38);
-		const bumpH = range(3, 7);
-		terrain.FillBall(
-			new Vector3(math.cos(a) * r, groundY(r) + bumpH - bumpR, math.sin(a) * r),
-			bumpR,
-			i % 3 === 0 ? Enum.Material.Sandstone : Enum.Material.Ground,
-		);
-	}
-
-	// Pale round salt pan at the centre of the basin, deliberately much smaller
-	// than the basin so the lakebed reads as dirt with a salt patch, not one
-	// uniform pale disk. ReplaceMaterial recolours existing voxels without
-	// adding volume (a Fill would raise the floor and bury the derrick pad),
-	// but only takes boxes — so approximate the circle with a row of strips;
-	// voxel smoothing softens the stepped edge.
-	const saltRadius = LAKEBED_INNER * 0.55;
-	const strips = 14;
-	for (let i = 0; i < strips; i++) {
-		const z0 = -saltRadius + (2 * saltRadius * i) / strips;
-		const z1 = z0 + (2 * saltRadius) / strips;
-		const zEdge = math.max(math.abs(z0), math.abs(z1));
-		const halfX = math.sqrt(math.max(saltRadius * saltRadius - zEdge * zEdge, 0));
-		if (halfX < 8) continue;
-		const region = new Region3(
-			new Vector3(-halfX, -LAKEBED_DEPTH - 6, z0),
-			new Vector3(halfX, -LAKEBED_DEPTH + 2, z1),
-		).ExpandToGrid(4);
-		pcall(() => terrain.ReplaceMaterial(region, 4, Enum.Material.Ground, Enum.Material.Salt));
-	}
+	// Collision-critical ground is complete before any car is allowed to spawn.
+	Workspace.SetAttribute("ArenaReady", true);
 }
 
 // ===========================================================================
@@ -336,7 +332,10 @@ function buildCanyon(arena: Model) {
 		const r = CANYON_INNER_RADIUS + range(0, 70);
 		let height = range(60, 150);
 		if (i % 7 === 0) height *= 0.45; // saddle: a low pass revealing the horizon
-		const pos = new Vector3(math.cos(a) * r, groundY(r) + height / 2 - 10, math.sin(a) * r);
+		// Canyon blocks are deliberately buried well below the sampled surface.
+		// Their slight random tilt otherwise lifts a lower corner and exposes a
+		// visible daylight seam between the wall and the outer terrain slope.
+		const pos = surfacePosition(a, r, height / 2 - 24);
 		const cf = CFrame.lookAt(pos, new Vector3(0, pos.Y, 0)).mul(
 			CFrame.Angles(range(-0.05, 0.05), 0, range(-0.08, 0.08)),
 		);
@@ -365,7 +364,7 @@ function buildCanyon(arena: Model) {
 		// A few smaller boulders at the base for silhouette variety.
 		if (i % 2 === 0) {
 			const br = CANYON_INNER_RADIUS - range(6, 22);
-			const bpos = new Vector3(math.cos(a) * br, groundY(br) + range(4, 10), math.sin(a) * br);
+			const bpos = surfacePosition(a, br, range(4, 10));
 			makePart(arena, {
 				name: "Boulder",
 				size: new Vector3(range(18, 34), range(14, 26), range(18, 34)),
@@ -388,7 +387,7 @@ function buildMesas(arena: Model) {
 		const w = range(180, 360);
 		const h = range(90, 200);
 		const d = range(120, 240);
-		const pos = new Vector3(math.cos(a) * r, groundY(r) + h / 2 - 12, math.sin(a) * r);
+		const pos = surfacePosition(a, r, h / 2 - 12);
 		const cf = CFrame.lookAt(pos, new Vector3(0, pos.Y, 0)).mul(CFrame.Angles(0, range(-0.3, 0.3), 0));
 		makePart(arena, {
 			name: "Mesa",
@@ -414,7 +413,7 @@ function buildMesas(arena: Model) {
 		const a = rand() * TWO_PI;
 		const r = range(700, 900);
 		const h = range(120, 190);
-		const pos = new Vector3(math.cos(a) * r, groundY(r) + h / 2 - 10, math.sin(a) * r);
+		const pos = surfacePosition(a, r, h / 2 - 10);
 		makePart(arena, {
 			name: "Butte",
 			size: new Vector3(range(38, 66), h, range(34, 60)),
@@ -459,7 +458,7 @@ function smokeEmitter(parent: BasePart, color: Color3, rate: number, sizeStart: 
 function buildRefinery(arena: Model) {
 	const sectorA = math.rad(52); // which direction the industrial skyline sits in
 	const baseR = 730;
-	const centre = new Vector3(math.cos(sectorA) * baseR, groundY(baseR), math.sin(sectorA) * baseR);
+	const centre = surfacePosition(sectorA, baseR);
 	const right = new Vector3(-math.sin(sectorA), 0, math.cos(sectorA)); // tangent, for spreading the cluster
 
 	// Storage tanks.
@@ -633,7 +632,7 @@ function buildPylons(arena: Model) {
 	for (let i = 0; i < count; i++) {
 		const a = math.rad(startDeg + stepDeg * i);
 		const radial = new Vector3(math.cos(a), 0, math.sin(a));
-		const pos = new Vector3(math.cos(a) * r, groundY(r), math.sin(a) * r);
+		const pos = surfacePosition(a, r);
 		const arms = buildPylon(arena, pos, radial, range(58, 66));
 
 		if (prevArms) {
@@ -658,7 +657,7 @@ function buildPylons(arena: Model) {
 // ===========================================================================
 function buildWaterTower(arena: Model) {
 	const a = math.rad(330);
-	const pos = new Vector3(math.cos(a) * 520, groundY(520), math.sin(a) * 520);
+	const pos = surfacePosition(a, 520);
 	const legTop = 34;
 	const half = 9;
 
@@ -702,7 +701,7 @@ function buildWaterTower(arena: Model) {
 
 function buildWindmill(arena: Model) {
 	const a = math.rad(100);
-	const pos = new Vector3(math.cos(a) * 512, groundY(512), math.sin(a) * 512);
+	const pos = surfacePosition(a, 512);
 	const height = 38;
 	const half = 5;
 
@@ -877,12 +876,12 @@ function buildDerrick(arena: Model) {
 // ===========================================================================
 function buildFloodlights(arena: Model) {
 	const r = FLOOR_RADIUS + 28;
-	const gy = groundY(r);
 	const count = 12;
 	for (let i = 0; i < count; i++) {
 		const a = (i / count) * TWO_PI + math.rad(18);
 		const baseX = math.cos(a) * r;
 		const baseZ = math.sin(a) * r;
+		const gy = groundYAt(baseX, baseZ);
 		const poleH = range(66, 78);
 
 		// Pole.
@@ -899,7 +898,7 @@ function buildFloodlights(arena: Model) {
 		// instead of a horizontal wash across the whole bowl.
 		const headPos = new Vector3(baseX, gy + poleH, baseZ);
 		const aimR = r - 105;
-		const aimPoint = new Vector3(math.cos(a) * aimR, groundY(aimR), math.sin(a) * aimR);
+		const aimPoint = surfacePosition(a, aimR);
 		const headCf = CFrame.lookAt(headPos, aimPoint);
 		makePart(arena, {
 			name: "FloodRack",
@@ -992,7 +991,7 @@ function buildFloodlights(arena: Model) {
 function makeBillboard(arena: Model, angleDeg: number, text: string, accent: Color3) {
 	const a = math.rad(angleDeg);
 	const r = CANYON_INNER_RADIUS - 8;
-	const y = groundY(r) + range(40, 52);
+	const y = groundYAt(math.cos(a) * r, math.sin(a) * r) + range(40, 52);
 	const pos = new Vector3(math.cos(a) * r, y, math.sin(a) * r);
 	const facing = CFrame.lookAt(pos, new Vector3(0, y, 0));
 
@@ -1088,7 +1087,7 @@ function buildScrub(arena: Model) {
 		if (r < 44) continue; // keep the derrick pad clear
 		if (r < LAKEBED_INNER && rand() < 0.7) continue; // salt pan mostly bare
 		if (r > LAKEBED_OUTER - 6 && r < FLOOR_RADIUS + 4 && rand() < 0.8) continue; // keep the track clean
-		scrubBush(arena, new Vector3(math.cos(a) * r, groundY(r), math.sin(a) * r));
+		scrubBush(arena, surfacePosition(a, r));
 	}
 
 	// Tumbleweeds resting against berms and barriers.
@@ -1099,7 +1098,7 @@ function buildScrub(arena: Model) {
 		makePart(arena, {
 			name: "Tumbleweed",
 			size: new Vector3(s, s, s),
-			cframe: new CFrame(math.cos(a) * r, groundY(r) + s / 2, math.sin(a) * r).mul(
+			cframe: new CFrame(surfacePosition(a, r, s / 2)).mul(
 				CFrame.Angles(rand() * TWO_PI, rand() * TWO_PI, 0),
 			),
 			color: Color3.fromRGB(142, 120, 80),
@@ -1138,12 +1137,12 @@ function buildDeadTrees(arena: Model) {
 	for (let i = 0; i < 16; i++) {
 		const a = rand() * TWO_PI;
 		const r = range(FLOOR_RADIUS + 14, CANYON_INNER_RADIUS - 26);
-		deadTree(arena, new Vector3(math.cos(a) * r, groundY(r), math.sin(a) * r));
+		deadTree(arena, surfacePosition(a, r));
 	}
 	for (let i = 0; i < 5; i++) {
 		const a = rand() * TWO_PI;
 		const r = range(LAKEBED_INNER + 8, LAKEBED_OUTER - 12);
-		deadTree(arena, new Vector3(math.cos(a) * r, groundY(r), math.sin(a) * r));
+		deadTree(arena, surfacePosition(a, r));
 	}
 }
 
@@ -1235,20 +1234,20 @@ function buildJunk(arena: Model) {
 	for (let i = 0; i < 9; i++) {
 		const a = rand() * TWO_PI;
 		const r = range(60, LAKEBED_OUTER - 16);
-		tireStack(arena, new Vector3(math.cos(a) * r, groundY(r), math.sin(a) * r));
+		tireStack(arena, surfacePosition(a, r));
 	}
 	for (let i = 0; i < 6; i++) {
 		const a = rand() * TWO_PI;
 		const r = range(70, LAKEBED_OUTER - 24);
-		junkPile(arena, new Vector3(math.cos(a) * r, groundY(r) + 1, math.sin(a) * r));
+		junkPile(arena, surfacePosition(a, r, 1));
 	}
 	for (let i = 0; i < 4; i++) {
 		const a = rand() * TWO_PI;
 		const r = range(90, LAKEBED_INNER + 40);
-		carWreck(arena, new Vector3(math.cos(a) * r, groundY(r), math.sin(a) * r), rand() * TWO_PI);
+		carWreck(arena, surfacePosition(a, r), rand() * TWO_PI);
 	}
-	shack(arena, new Vector3(math.cos(math.rad(200)) * 400, groundY(400), math.sin(math.rad(200)) * 400), 0.6);
-	shack(arena, new Vector3(math.cos(math.rad(20)) * 420, groundY(420), math.sin(math.rad(20)) * 420), 3.5);
+	shack(arena, surfacePosition(math.rad(200), 400), 0.6);
+	shack(arena, surfacePosition(math.rad(20), 420), 3.5);
 }
 
 // ===========================================================================
@@ -1261,7 +1260,7 @@ function buildDust(arena: Model) {
 		const host = makePart(arena, {
 			name: "DustHost",
 			size: new Vector3(60, 1, 60),
-			cframe: new CFrame(math.cos(a) * r, groundY(r) + 3, math.sin(a) * r),
+			cframe: new CFrame(surfacePosition(a, r, 3)),
 			color: DIRT,
 			material: Enum.Material.Plastic,
 			transparency: 1,
@@ -1298,7 +1297,9 @@ function buildDust(arena: Model) {
 function buildSpawn(arena: Model) {
 	const carPos = SPAWN_CFRAME.Position;
 	const back = SPAWN_CFRAME.LookVector.mul(-16); // 16 studs behind the car
-	const padPos = new Vector3(carPos.X + back.X, 0.5, carPos.Z + back.Z);
+	const padX = carPos.X + back.X;
+	const padZ = carPos.Z + back.Z;
+	const padPos = new Vector3(padX, groundYAt(padX, padZ) + 0.5, padZ);
 	// Face the pad toward the car so the player spawns looking right at it.
 	const lookTarget = new Vector3(carPos.X, padPos.Y, carPos.Z);
 
@@ -1343,14 +1344,12 @@ function buildArena() {
 
 	setupLighting();
 	buildGround();
-	buildBerm(arena);
 	buildCanyon(arena);
 	buildMesas(arena);
 	buildRefinery(arena);
 	buildPylons(arena);
 	buildWaterTower(arena);
 	buildWindmill(arena);
-	buildBarrier(arena);
 	buildDerrick(arena);
 	buildFloodlights(arena);
 	buildBillboards(arena);

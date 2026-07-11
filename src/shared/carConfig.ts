@@ -1,4 +1,4 @@
-import { SPAWN_HEIGHT, SPAWN_RADIUS } from "shared/arenaConfig";
+import { groundYAt, SPAWN_RADIUS } from "shared/arenaConfig";
 
 export const CAR_NAME = "Car";
 export const CHASSIS_NAME = "Chassis";
@@ -9,8 +9,9 @@ export const SEAT_NAME = "Seat";
 // the visual hull so rams connect where the bodywork appears to.
 export const CHASSIS_SIZE = new Vector3(9, 1.5, 16);
 
-// Spawn on the flat outer track ring, nose pointed along the track (tangent).
-const SPAWN_POS = new Vector3(0, SPAWN_HEIGHT, SPAWN_RADIUS);
+// Spawn on the outer loop, nose pointed tangentially. The analytic height
+// matches the voxel surface; groundedSpawnCFrame performs the final raycast.
+const SPAWN_POS = new Vector3(0, groundYAt(0, SPAWN_RADIUS) + 5.5, SPAWN_RADIUS);
 export const SPAWN_CFRAME = CFrame.lookAt(SPAWN_POS, SPAWN_POS.add(new Vector3(1, 0, 0)));
 
 // Match the shell's tyres (native diameter 3.72) and its axle positions, so

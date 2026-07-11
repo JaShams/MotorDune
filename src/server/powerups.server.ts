@@ -1,5 +1,5 @@
 import { Players, ReplicatedStorage, RunService, ServerStorage, TweenService, Workspace } from "@rbxts/services";
-import { FLOOR_RADIUS, groundY } from "shared/arenaConfig";
+import { groundYAt, TRACK_CENTER_RADIUS } from "shared/arenaConfig";
 import { CHASSIS_NAME, SEAT_NAME } from "shared/carConfig";
 import {
 	BARGE_RADIUS,
@@ -298,22 +298,20 @@ function setPadVisible(pad: Pad, visible: boolean) {
 	if (billboard) billboard.Enabled = visible;
 }
 
-// Pad heights come from the shared analytic crater profile (groundY), not a
-// terrain raycast: at boot the arena script may still be mid-carve (ArenaReady
-// deliberately fires before the basin is dug out), so a raycast can catch the
-// interim flat floor and leave the basin pads floating ~17 studs up.
+// Pad heights come from the same analytic surface sampled by the terrain
+// builder, so ring undulation and bowl features cannot leave pads floating.
 function spawnPads() {
 	const float = 3.5; // gem height above the ground
 
 	// Single pads around the track ring.
 	const ringPads = 14;
-	const ringRadius = FLOOR_RADIUS - 20;
+	const ringRadius = TRACK_CENTER_RADIUS;
 	for (let i = 0; i < ringPads; i++) {
 		const angle = (i / ringPads) * math.pi * 2;
 		const x = math.cos(angle) * ringRadius;
 		const z = math.sin(angle) * ringRadius;
 		const kind = POWERUP_TYPES[math.floor(rand() * POWERUP_TYPES.size()) % POWERUP_TYPES.size()];
-		createPad(new Vector3(x, groundY(ringRadius) + float, z), kind);
+		createPad(new Vector3(x, groundYAt(x, z) + float, z), kind);
 	}
 
 	// A scattering inside the basin for demolition brawls.
@@ -326,7 +324,7 @@ function spawnPads() {
 			const x = math.cos(angle) * ringRadius;
 			const z = math.sin(angle) * ringRadius;
 			const kind = POWERUP_TYPES[math.floor(rand() * POWERUP_TYPES.size()) % POWERUP_TYPES.size()];
-			createPad(new Vector3(x, groundY(ringRadius) + float, z), kind);
+			createPad(new Vector3(x, groundYAt(x, z) + float, z), kind);
 		}
 	}
 }
@@ -871,8 +869,7 @@ function initCarSlots(car: Model) {
 }
 
 // --- Boot ----------------------------------------------------------------------------
-// Pad placement is analytic (shared groundY), so it doesn't need to wait for
-// the arena terrain; the carve finishes around the already-correct pads.
+// Pad placement is analytic, so it can run alongside cosmetic arena dressing.
 spawnPads();
 startPickupLoop();
 
