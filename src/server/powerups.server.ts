@@ -62,6 +62,8 @@ const SHUNT_BLAST_RADIUS = 16;
 // missile; the blast radius comfortably covers the near-missed victim.
 const SHUNT_PROXIMITY = 11; // ~chassis half-diagonal (9.2) + the old 1.2 margin
 const SHUNT_KNOCK = 52;
+const SHUNT_GROUND_CLEARANCE = 2.5;
+const SHUNT_INTERCEPT_RADIUS = 2.4;
 // Bolts stay dumbfire, but sweep a bolt-sized sphere instead of a zero-width
 // ray so grazing a moving car counts as the hit it looks like.
 const BOLT_HIT_RADIUS = 1.2;
@@ -411,9 +413,20 @@ interface Projectile {
 	expiresAt: number;
 	kind: "bolt" | "shunt";
 	target?: Model;
+	active: boolean;
 }
 
 const projectiles = new Array<Projectile>();
+
+interface ActiveMine {
+	part: BasePart;
+	owner: Model;
+	armedAt: number;
+	diesAt: number;
+	active: boolean;
+}
+
+const activeMines = new Array<ActiveMine>();
 
 function projectileRayParams(firer: Model) {
 	const params = new RaycastParams();
@@ -464,6 +477,7 @@ function fireBolt(car: Model, backward: boolean) {
 		firer: car,
 		expiresAt: os.clock() + BOLT_LIFETIME,
 		kind: "bolt",
+		active: true,
 	});
 }
 
@@ -490,6 +504,8 @@ function findShuntTarget(firer: Model, origin: Vector3, direction: Vector3): Mod
 function fireShunt(car: Model, backward: boolean) {
 	const muzzle = muzzleCFrame(car, backward);
 	if (!muzzle) return;
+	const flatLook = new Vector3(muzzle.LookVector.X, 0, muzzle.LookVector.Z);
+	const launchDirection = flatLook.Magnitude > 0.01 ? flatLook.Unit : new Vector3(0, 0, -1);
 
 	const missile = new Instance("Part");
 	missile.Name = "Shunt";
@@ -511,11 +527,12 @@ function fireShunt(car: Model, backward: boolean) {
 
 	projectiles.push({
 		part: missile,
-		velocity: muzzle.LookVector.mul(SHUNT_SPEED),
+		velocity: launchDirection.mul(SHUNT_SPEED),
 		firer: car,
 		expiresAt: os.clock() + SHUNT_LIFETIME,
 		kind: "shunt",
 		target: findShuntTarget(car, muzzle.Position, muzzle.LookVector),
+		active: true,
 	});
 }
 
@@ -539,17 +556,70 @@ function explodeShunt(position: Vector3, firer?: Model) {
 	}
 }
 
+// Lifecycle changes funnel through these helpers. Interceptors and the normal
+// simulation can notice the same object in one frame, so the active flag must
+// be cleared before any FX or damage is produced.
+function finishProjectile(
+	projectile: Projectile,
+	damagingShunt: boolean,
+	position = projectile.part.Position,
+	excludeFirer = true,
+) {
+	if (!projectile.active) return;
+	projectile.active = false;
+	if (projectile.kind === "shunt" && damagingShunt) explodeShunt(position, excludeFirer ? projectile.firer : undefined);
+	projectile.part.Destroy();
+}
+
+function cancelShunt(projectile: Projectile, position = projectile.part.Position) {
+	if (!projectile.active || projectile.kind !== "shunt") return;
+	projectile.active = false;
+	// A smaller, cooler pop distinguishes a successful counter from the orange
+	// damaging blast without applying damage or knockback.
+	explosionFx(position, Color3.fromRGB(150, 220, 255), 5);
+	projectile.part.Destroy();
+}
+
+function segmentDistance(point: Vector3, start: Vector3, step: Vector3) {
+	const lengthSquared = step.Dot(step);
+	if (lengthSquared < 1e-6) return point.sub(start).Magnitude;
+	const t = math.clamp(point.sub(start).Dot(step) / lengthSquared, 0, 1);
+	return point.sub(start.add(step.mul(t))).Magnitude;
+}
+
+function sampleShuntGround(x: number, z: number, referenceY: number) {
+	const fallbackY = groundYAt(x, z);
+	const params = new RaycastParams();
+	params.FilterType = Enum.RaycastFilterType.Include;
+	params.FilterDescendantsInstances = [Workspace.Terrain];
+	params.IgnoreWater = true;
+	const rayTop = math.max(referenceY, fallbackY) + 80;
+	const hit = Workspace.Raycast(new Vector3(x, rayTop, z), new Vector3(0, -200, 0), params);
+	if (hit) return { y: hit.Position.Y, normal: hit.Normal };
+
+	// Terrain can briefly be unavailable during streaming/build transitions.
+	// Derive a stable slope normal from the same deterministic height function
+	// used to build the arena rather than letting the missile fly vertically.
+	const sample = 2;
+	const dx = groundYAt(x + sample, z) - groundYAt(x - sample, z);
+	const dz = groundYAt(x, z + sample) - groundYAt(x, z - sample);
+	return { y: fallbackY, normal: new Vector3(-dx, sample * 2, -dz).Unit };
+}
+
+function shuntPathParams(firer: Model) {
+	const params = projectileRayParams(firer);
+	params.FilterDescendantsInstances = [firer, fxFolder, pickupsFolder, Workspace.Terrain];
+	return params;
+}
+
 RunService.Heartbeat.Connect((dt) => {
 	const now = os.clock();
 	for (let i = projectiles.size() - 1; i >= 0; i--) {
 		const projectile = projectiles[i];
+		if (!projectile.active) continue;
 
 		if (now >= projectile.expiresAt || !projectile.part.IsDescendantOf(game)) {
-			if (projectile.kind === "shunt" && projectile.part.IsDescendantOf(game)) {
-				explodeShunt(projectile.part.Position, projectile.firer);
-			}
-			projectile.part.Destroy();
-			projectiles.remove(i);
+			finishProjectile(projectile, projectile.kind === "shunt" && projectile.part.IsDescendantOf(game));
 			continue;
 		}
 
@@ -567,9 +637,7 @@ RunService.Heartbeat.Connect((dt) => {
 				}
 			}
 			if (fused) {
-				explodeShunt(projectile.part.Position, projectile.firer);
-				projectile.part.Destroy();
-				projectiles.remove(i);
+				finishProjectile(projectile, true);
 				continue;
 			}
 		}
@@ -578,9 +646,11 @@ RunService.Heartbeat.Connect((dt) => {
 		if (projectile.kind === "shunt" && projectile.target && projectile.target.IsDescendantOf(game)) {
 			const targetChassis = getChassis(projectile.target);
 			if (targetChassis) {
-				const desired = targetChassis.Position.add(new Vector3(0, 1, 0)).sub(projectile.part.Position);
+				const offset = targetChassis.Position.sub(projectile.part.Position);
+				const desired = new Vector3(offset.X, 0, offset.Z);
 				if (desired.Magnitude > 0.5) {
-					const currentDir = projectile.velocity.Unit;
+					const flatVelocity = new Vector3(projectile.velocity.X, 0, projectile.velocity.Z);
+					const currentDir = flatVelocity.Magnitude > 0.01 ? flatVelocity.Unit : desired.Unit;
 					const desiredDir = desired.Unit;
 					const angle = math.acos(math.clamp(currentDir.Dot(desiredDir), -1, 1));
 					const maxStep = SHUNT_TURN_RATE * dt;
@@ -592,12 +662,42 @@ RunService.Heartbeat.Connect((dt) => {
 		}
 
 		const step = projectile.velocity.mul(dt);
+
+		if (projectile.kind === "bolt") {
+			for (const other of projectiles) {
+				if (!other.active || other.kind !== "shunt") continue;
+				if (segmentDistance(other.part.Position, projectile.part.Position, step) > SHUNT_INTERCEPT_RADIUS) continue;
+				const popAt = other.part.Position;
+				cancelShunt(other, popAt);
+				finishProjectile(projectile, false);
+				break;
+			}
+			if (!projectile.active) continue;
+		} else {
+			for (const mine of activeMines) {
+				if (!mine.active || now < mine.armedAt) continue;
+				if (segmentDistance(mine.part.Position, projectile.part.Position, step) > MINE_TRIGGER_RADIUS * 0.45) continue;
+				cancelShunt(projectile, mine.part.Position);
+				detonateMine(mine);
+				break;
+			}
+			if (!projectile.active) continue;
+		}
+
+		let nextPosition = projectile.part.Position.add(step);
+		let groundNormal = Vector3.yAxis;
+		if (projectile.kind === "shunt") {
+			const ground = sampleShuntGround(nextPosition.X, nextPosition.Z, projectile.part.Position.Y);
+			nextPosition = new Vector3(nextPosition.X, ground.y + SHUNT_GROUND_CLEARANCE, nextPosition.Z);
+			groundNormal = ground.normal;
+		}
+		const sweptStep = nextPosition.sub(projectile.part.Position);
 		// Bolts sweep their own width (see BOLT_HIT_RADIUS); shunts keep the thin
 		// ray for walls/terrain and rely on the proximity fuse for cars.
 		const hit =
 			projectile.kind === "bolt"
-				? Workspace.Spherecast(projectile.part.Position, BOLT_HIT_RADIUS, step, projectileRayParams(projectile.firer))
-				: Workspace.Raycast(projectile.part.Position, step, projectileRayParams(projectile.firer));
+				? Workspace.Spherecast(projectile.part.Position, BOLT_HIT_RADIUS, sweptStep, projectileRayParams(projectile.firer))
+				: Workspace.Raycast(projectile.part.Position, sweptStep, shuntPathParams(projectile.firer));
 
 		if (hit) {
 			const struckCar = carFromHit(hit.Instance);
@@ -614,16 +714,23 @@ RunService.Heartbeat.Connect((dt) => {
 				}
 				explosionFx(hit.Position, POWERUP_INFO.bolt.color, 4);
 			} else {
-				explodeShunt(hit.Position);
+				// Preserve the prior wall-impact blast semantics; unlike expiry and
+				// proximity hits, an immediate wall impact can catch the firer.
+				finishProjectile(projectile, true, hit.Position, false);
 			}
-			projectile.part.Destroy();
-			projectiles.remove(i);
+			if (projectile.kind === "bolt") finishProjectile(projectile, false);
 			continue;
 		}
 
-		const nextPosition = projectile.part.Position.add(step);
-		projectile.part.CFrame = CFrame.lookAt(nextPosition, nextPosition.add(projectile.velocity));
+		if (projectile.kind === "shunt") {
+			const flatDirection = new Vector3(projectile.velocity.X, 0, projectile.velocity.Z).Unit;
+			const slopeDirection = flatDirection.sub(groundNormal.mul(flatDirection.Dot(groundNormal))).Unit;
+			projectile.part.CFrame = CFrame.lookAt(nextPosition, nextPosition.add(slopeDirection), groundNormal);
+		} else {
+			projectile.part.CFrame = CFrame.lookAt(nextPosition, nextPosition.add(projectile.velocity));
+		}
 	}
+	for (let i = projectiles.size() - 1; i >= 0; i--) if (!projectiles[i].active) projectiles.remove(i);
 });
 
 // --- Mines -----------------------------------------------------------------------
@@ -656,48 +763,73 @@ function dropMine(car: Model, backward: boolean) {
 	light.Parent = mine;
 	mine.Parent = fxFolder;
 
-	const armedAt = os.clock() + MINE_ARM_DELAY;
-	const diesAt = os.clock() + MINE_LIFETIME;
-	let exploded = false;
+	const activeMine: ActiveMine = {
+		part: mine,
+		owner: car,
+		armedAt: os.clock() + MINE_ARM_DELAY,
+		diesAt: os.clock() + MINE_LIFETIME,
+		active: true,
+	};
+	activeMines.push(activeMine);
 
 	task.spawn(() => {
-		while (!exploded && mine.IsDescendantOf(game)) {
+		while (activeMine.active && mine.IsDescendantOf(game)) {
 			const now = os.clock();
-			if (now >= diesAt) break;
+			if (now >= activeMine.diesAt) break;
 
 			// Blink faster once armed.
-			light.Enabled = now >= armedAt ? math.floor(now * 4) % 2 === 0 : true;
+			light.Enabled = now >= activeMine.armedAt ? math.floor(now * 4) % 2 === 0 : true;
 
-			if (now >= armedAt) {
+			if (now >= activeMine.armedAt) {
 				for (const target of getCars()) {
 					const targetChassis = getChassis(target);
 					if (!targetChassis) continue;
 					if (targetChassis.Position.sub(mine.Position).Magnitude > MINE_TRIGGER_RADIUS) continue;
 
-					exploded = true;
-					explosionFx(mine.Position, POWERUP_INFO.mine.color, 12);
-					const offset = targetChassis.Position.sub(mine.Position);
-					const away =
-						new Vector3(offset.X, 0, offset.Z).Magnitude > 0.5
-							? new Vector3(offset.X, 0, offset.Z).Unit
-							: targetChassis.CFrame.LookVector;
-					// Mines hurt whoever trips them — including the car that
-					// dropped one (no points for self-damage, though).
-					knockCar(
-						target,
-						away.mul(MINE_KNOCK_AWAY).add(new Vector3(0, MINE_KNOCK_UP, 0)),
-						new Vector3(0, 4, 0),
-						car,
-						POWERUP_DAMAGE.mine,
-					);
+					detonateMine(activeMine);
 					break;
 				}
 			}
 
 			task.wait(0.1);
 		}
-		mine.Destroy();
+		finishMine(activeMine);
 	});
+}
+
+function finishMine(mine: ActiveMine) {
+	if (!mine.active) return;
+	mine.active = false;
+	mine.part.Destroy();
+	const index = activeMines.indexOf(mine);
+	if (index >= 0) activeMines.remove(index);
+}
+
+function detonateMine(mine: ActiveMine) {
+	if (!mine.active) return;
+	const position = mine.part.Position;
+	// Clear active first because a shunt and car can enter the trigger volume in
+	// the same simulation slice. The mine blast still affects every nearby car.
+	mine.active = false;
+	explosionFx(position, POWERUP_INFO.mine.color, 12);
+	for (const target of getCars()) {
+		const targetChassis = getChassis(target);
+		if (!targetChassis) continue;
+		const offset = targetChassis.Position.sub(position);
+		if (offset.Magnitude > MINE_TRIGGER_RADIUS) continue;
+		const flat = new Vector3(offset.X, 0, offset.Z);
+		const away = flat.Magnitude > 0.5 ? flat.Unit : targetChassis.CFrame.LookVector;
+		knockCar(
+			target,
+			away.mul(MINE_KNOCK_AWAY).add(new Vector3(0, MINE_KNOCK_UP, 0)),
+			new Vector3(0, 4, 0),
+			mine.owner,
+			POWERUP_DAMAGE.mine,
+		);
+	}
+	mine.part.Destroy();
+	const index = activeMines.indexOf(mine);
+	if (index >= 0) activeMines.remove(index);
 }
 
 // --- Shield ------------------------------------------------------------------------
@@ -788,6 +920,13 @@ function activateBarge(car: Model) {
 		Transparency: 1,
 	}).Play();
 	task.delay(0.45, () => ring.Destroy());
+
+	// Barge is an indiscriminate projectile counter: ownership is deliberately
+	// ignored, matching the visible shockwave rather than car damage rules.
+	for (const projectile of projectiles) {
+		if (!projectile.active || projectile.kind !== "shunt") continue;
+		if (projectile.part.Position.sub(chassis.Position).Magnitude <= BARGE_RADIUS) cancelShunt(projectile);
+	}
 
 	for (const target of getCars()) {
 		if (target === car) continue;
