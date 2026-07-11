@@ -140,22 +140,24 @@ const SCRUB_COLORS: ReadonlyArray<Color3> = [
 ];
 
 // ===========================================================================
-// Lighting: deep desert dusk (the concept-art look) — sun just gone, a last
-// warm band on the horizon, dark steel-blue sky overhead, and the arena lit
-// almost entirely by its own floodlights. Assumes Lighting.Technology=Future
-// (not scriptable at runtime; set once on the place file via Studio).
+// Lighting: readable desert dusk — the sun has just dipped behind the rim,
+// leaving a warm horizon and steel-blue sky. The ambient fill deliberately
+// preserves car/prop silhouettes in the crater's broad shadows; contrast is
+// kept in the local floodlight pools instead of crushed into the colour grade.
+// Assumes Lighting.Technology=Future (not scriptable at runtime; set once on
+// the place file via Studio).
 // ===========================================================================
 function setupLighting() {
 	Lighting.ClockTime = 17.95; // sun dipping behind the crater rim — dusk band in the sky, no blown-out disk
 	Lighting.GeographicLatitude = 18;
-	Lighting.Brightness = 2;
-	Lighting.ExposureCompensation = 0.55;
+	Lighting.Brightness = 2.25;
+	Lighting.ExposureCompensation = 0.3;
 	// Warm ambient fakes the floodlight bounce filling the bowl (the concept's
 	// whole arena glows); shadows still cool off toward blue via Ambient.
-	Lighting.OutdoorAmbient = Color3.fromRGB(128, 116, 108);
-	Lighting.Ambient = Color3.fromRGB(66, 60, 62);
-	Lighting.EnvironmentDiffuseScale = 0.45;
-	Lighting.EnvironmentSpecularScale = 0.5;
+	Lighting.OutdoorAmbient = Color3.fromRGB(148, 132, 120);
+	Lighting.Ambient = Color3.fromRGB(96, 86, 88);
+	Lighting.EnvironmentDiffuseScale = 0.6;
+	Lighting.EnvironmentSpecularScale = 0.55;
 	Lighting.ShadowSoftness = 0.25;
 
 	// Broken night cloud, dark with a faint mauve underside from the dusk glow.
@@ -190,9 +192,9 @@ function setupLighting() {
 	const cc = new Instance("ColorCorrectionEffect");
 	cc.Name = "ArenaColor";
 	cc.Brightness = 0.04;
-	cc.Contrast = 0.18;
-	cc.Saturation = 0.06;
-	cc.TintColor = Color3.fromRGB(252, 240, 232);
+	cc.Contrast = 0.08;
+	cc.Saturation = 0.02;
+	cc.TintColor = Color3.fromRGB(255, 246, 240);
 	cc.Parent = Lighting;
 
 	const oldBloom = Lighting.FindFirstChild("ArenaBloom");
@@ -200,9 +202,9 @@ function setupLighting() {
 	const bloom = new Instance("BloomEffect");
 	bloom.Name = "ArenaBloom";
 	// Threshold below 1 so the neon lamp lenses and signs halo at night.
-	bloom.Intensity = 1.0;
-	bloom.Size = 28;
-	bloom.Threshold = 0.95;
+	bloom.Intensity = 0.65;
+	bloom.Size = 24;
+	bloom.Threshold = 1.1;
 	bloom.Parent = Lighting;
 
 	const oldRays = Lighting.FindFirstChild("ArenaSunRays");
@@ -212,6 +214,14 @@ function setupLighting() {
 	rays.Intensity = 0.04;
 	rays.Spread = 0.6;
 	rays.Parent = Lighting;
+
+	// Studio place files may retain the default post effects even though the
+	// arena owns its tuned variants. Remove the known defaults so bloom and sun
+	// rays do not stack differently between a clean Rojo place and this place.
+	for (const defaultEffectName of ["Bloom", "SunRays"]) {
+		const defaultEffect = Lighting.FindFirstChild(defaultEffectName);
+		if (defaultEffect) defaultEffect.Destroy();
+	}
 }
 
 // ===========================================================================
@@ -837,6 +847,21 @@ function buildDerrick(arena: Model) {
 		material: Enum.Material.Metal,
 	});
 
+	// A broad lighting crown makes the derrick part of the arena illumination,
+	// not just a dark landmark with a beacon. Two crossed outriggers carry the
+	// fixtures beyond the tower legs so the structure does not block its own
+	// downlight.
+	const crownY = baseY + height + 4;
+	for (const yaw of [0, math.rad(90)]) {
+		makePart(arena, {
+			name: "DerrickLightRack",
+			size: new Vector3(38, 2, 2),
+			cframe: new CFrame(0, crownY, 0).mul(CFrame.Angles(0, yaw, 0)),
+			color: METAL_DARK,
+			material: Enum.Material.Metal,
+		});
+	}
+
 	// Glowing red beacon + light on top.
 	const beacon = makePart(arena, {
 		name: "Beacon",
@@ -851,22 +876,55 @@ function buildDerrick(arena: Model) {
 	beaconLight.Range = 70;
 	beaconLight.Parent = beacon;
 
-	// Downlights on the platform corners to light the centre of the pit.
-	for (const c of legCorners) {
+	// Cant the crown lights outward into the rising bowl rather than pointing
+	// straight down at the derrick pad. The hidden fill below follows the same
+	// four directions so the visible fixture aim matches the illuminated dirt.
+	const derrickLightDirections = [
+		new Vector3(-1, 0, 0),
+		new Vector3(1, 0, 0),
+		new Vector3(0, 0, -1),
+		new Vector3(0, 0, 1),
+	];
+	for (const direction of derrickLightDirections) {
+		const lensPos = direction.mul(17).add(new Vector3(0, crownY - 1.5, 0));
+		const slopePos = direction.mul(190);
+		const slopeTarget = new Vector3(slopePos.X, groundYAt(slopePos.X, slopePos.Z), slopePos.Z);
 		const lens = makePart(arena, {
 			name: "DerrickLamp",
-			size: new Vector3(2.4, 1, 2.4),
-			cframe: new CFrame(c.X * 0.35, baseY + height, c.Z * 0.35),
+			size: new Vector3(4, 1.4, 4),
+			cframe: CFrame.lookAt(lensPos, slopeTarget),
 			color: Color3.fromRGB(255, 244, 214),
 			material: Enum.Material.Neon,
 		});
 		const light = new Instance("SpotLight");
-		light.Face = Enum.NormalId.Bottom;
+		light.Face = Enum.NormalId.Front;
 		light.Angle = 90;
 		light.Range = 60; // engine max
-		light.Brightness = 8;
+		light.Brightness = 7;
 		light.Color = Color3.fromRGB(255, 240, 210);
 		light.Parent = lens;
+	}
+
+	// The slopes are beyond the 60-stud engine light-range limit. Hidden low
+	// fill lights at the four aim areas continue each beam onto the terrain;
+	// a subdued centre fill prevents the derrick pad becoming a black island.
+	for (const offset of [new Vector3(0, 0, 0), ...derrickLightDirections.map((direction) => direction.mul(165))]) {
+		const hostY = groundYAt(offset.X, offset.Z) + 8;
+		const host = makePart(arena, {
+			name: "DerrickPool",
+			size: new Vector3(1, 1, 1),
+			cframe: new CFrame(offset.X, hostY, offset.Z),
+			color: Color3.fromRGB(255, 232, 195),
+			material: Enum.Material.Neon,
+			transparency: 1,
+			canCollide: false,
+			castShadow: false,
+		});
+		const fill = new Instance("PointLight");
+		fill.Color = Color3.fromRGB(255, 232, 195);
+		fill.Brightness = offset.Magnitude === 0 ? 2 : 3;
+		fill.Range = 60;
+		fill.Parent = host;
 	}
 }
 
@@ -882,7 +940,9 @@ function buildFloodlights(arena: Model) {
 		const baseX = math.cos(a) * r;
 		const baseZ = math.sin(a) * r;
 		const gy = groundYAt(baseX, baseZ);
-		const poleH = range(66, 78);
+		// Tall stadium-scale masts keep the fixtures above the canyon silhouette
+		// and make the pools read as arena fill rather than searchlights.
+		const poleH = range(118, 136);
 
 		// Pole.
 		makePart(arena, {
@@ -893,25 +953,24 @@ function buildFloodlights(arena: Model) {
 			material: Enum.Material.Metal,
 		});
 
-		// Cross bar of lamps at the top, aimed down at the track ring so each
-		// tower throws a distinct warm pool onto the dirt (the concept look)
-		// instead of a horizontal wash across the whole bowl.
+		// Wide lamp rack aimed down at the track ring. Its individual fixtures
+		// overlap into a broad wash instead of resolving as one narrow beam.
 		const headPos = new Vector3(baseX, gy + poleH, baseZ);
 		const aimR = r - 105;
 		const aimPoint = surfacePosition(a, aimR);
 		const headCf = CFrame.lookAt(headPos, aimPoint);
 		makePart(arena, {
 			name: "FloodRack",
-			size: new Vector3(16, 4, 2),
+			size: new Vector3(36, 4.5, 2.5),
 			cframe: headCf,
 			color: METAL_DARK,
 			material: Enum.Material.Metal,
 		});
 
-		// Three glowing lamp lenses, each with a real spotlight — these towers
-		// are the arena's primary light source at night. Only the centre lamp
-		// casts shadows (shadowed lights are expensive; 12 is plenty).
-		for (const offset of [-5, 0, 5]) {
+		// Six glowing lamp lenses, each with a real spotlight — these towers
+		// are the arena's primary light source at night. Only one inner lamp per
+		// rack casts shadows (shadowed lights are expensive; 12 is plenty).
+		for (const offset of [-15, -9, -3, 3, 9, 15]) {
 			const lensCf = headCf.mul(new CFrame(offset, 0, -1.2));
 			const lens = makePart(arena, {
 				name: "FloodLens",
@@ -922,17 +981,17 @@ function buildFloodlights(arena: Model) {
 			});
 			const spot = new Instance("SpotLight");
 			spot.Face = Enum.NormalId.Front;
-			spot.Angle = offset === 0 ? 62 : 48;
+			spot.Angle = 78;
 			spot.Range = 60; // engine clamps Light.Range to 60 — the pool light below covers the rest
-			spot.Brightness = offset === 0 ? 16 : 8;
-			spot.Shadows = offset === 0;
+			spot.Brightness = 7;
+			spot.Shadows = offset === -3;
 			spot.Color = Color3.fromRGB(255, 236, 198);
 			spot.Parent = lens;
 		}
 
-		// Faint visible light shaft from the rack down toward the pool — reads
-		// through the dust and bloom. Kept thin and nearly invisible up close
-		// (cars drive under it); it registers as a beam mostly from a distance.
+		// Faint visible light shaft from the rack down toward the pool. The wide,
+		// very soft volume suggests dusty stadium light without a hard-edged
+		// prison-searchlight beam.
 		// Cylinder axis is X, so yaw the look-CFrame 90° to lay it along the beam.
 		const shaftVec = aimPoint.sub(headPos);
 		const shaftLen = shaftVec.Magnitude * 0.9;
@@ -940,33 +999,40 @@ function buildFloodlights(arena: Model) {
 		makePart(arena, {
 			name: "FloodShaft",
 			shape: Enum.PartType.Cylinder,
-			size: new Vector3(shaftLen, 4.5, 4.5),
+			size: new Vector3(shaftLen, 11, 11),
 			cframe: CFrame.lookAt(shaftMid, aimPoint).mul(CFrame.Angles(0, math.rad(90), 0)),
 			color: Color3.fromRGB(255, 234, 190),
 			material: Enum.Material.Neon,
-			transparency: 0.975,
+			transparency: 0.988,
 			canCollide: false,
 			castShadow: false,
 		});
 
-		// The lamp head sits ~130 studs from its ground pool but lights clamp at
 		// 60 studs of range, so the spotlight cone alone never reaches the dirt.
-		// A hidden warm point light hovering over the aim point paints the pool.
-		const poolHost = makePart(arena, {
-			name: "FloodPool",
-			size: new Vector3(1, 1, 1),
-			cframe: new CFrame(aimPoint.add(new Vector3(0, 6, 0))),
-			color: Color3.fromRGB(255, 232, 190),
-			material: Enum.Material.Neon,
-			transparency: 1,
-			canCollide: false,
-			castShadow: false,
-		});
-		const pool = new Instance("PointLight");
-		pool.Color = Color3.fromRGB(255, 232, 190);
-		pool.Brightness = 8; // Future-lighting falloff is steep; below ~5 the pool vanishes
-		pool.Range = 60;
-		pool.Parent = poolHost;
+		// The lamp head sits well beyond its ground pool but lights clamp at 60
+		// studs of range, so the spotlight cone alone never reaches the dirt.
+		// 60 studs of range, so the spotlight cone alone never reaches the dirt.
+		// Roblox clamps every light to 60 studs, so three lower-intensity point
+		// lights are spread tangentially across the track. Their overlap produces
+		// one wide, soft pool without an overexposed hot spot in the centre.
+		const tangent = new Vector3(-math.sin(a), 0, math.cos(a));
+		for (const poolOffset of [-58, 0, 58]) {
+			const poolHost = makePart(arena, {
+				name: "FloodPool",
+				size: new Vector3(1, 1, 1),
+				cframe: new CFrame(aimPoint.add(tangent.mul(poolOffset)).add(new Vector3(0, 8, 0))),
+				color: Color3.fromRGB(255, 232, 190),
+				material: Enum.Material.Neon,
+				transparency: 1,
+				canCollide: false,
+				castShadow: false,
+			});
+			const pool = new Instance("PointLight");
+			pool.Color = Color3.fromRGB(255, 232, 190);
+			pool.Brightness = poolOffset === 0 ? 4.5 : 3.5;
+			pool.Range = 60;
+			pool.Parent = poolHost;
+		}
 
 		// Warm glow point light so the tower head itself halos at night.
 		const glow = new Instance("PointLight");
