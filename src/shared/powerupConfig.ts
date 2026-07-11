@@ -9,18 +9,20 @@ export const POWERUP_TYPES: ReadonlyArray<PowerupType> = ["shield", "bolt", "shu
 export interface PowerupInfo {
 	color: Color3;
 	emoji: string;
+	/** Sharp, single-colour mark shared by world pickups and the weapon rack. */
+	glyph: string;
 	label: string;
 	/** Can the player choose to fire it backwards? */
 	directional: boolean;
 }
 
 export const POWERUP_INFO: Record<PowerupType, PowerupInfo> = {
-	shield: { color: Color3.fromRGB(80, 220, 255), emoji: "🛡️", label: "Shield", directional: false },
-	bolt: { color: Color3.fromRGB(255, 70, 70), emoji: "⚡", label: "Bolt", directional: true },
-	shunt: { color: Color3.fromRGB(255, 160, 40), emoji: "🚀", label: "Shunt", directional: true },
-	nitro: { color: Color3.fromRGB(190, 90, 255), emoji: "🔥", label: "Nitro", directional: false },
-	mine: { color: Color3.fromRGB(255, 220, 60), emoji: "💣", label: "Mine", directional: true },
-	barge: { color: Color3.fromRGB(70, 120, 255), emoji: "💥", label: "Barge", directional: false },
+	shield: { color: Color3.fromRGB(80, 220, 255), emoji: "🛡️", glyph: "⬡", label: "Shield", directional: false },
+	bolt: { color: Color3.fromRGB(255, 70, 70), emoji: "⚡", glyph: "ϟ", label: "Bolt", directional: true },
+	shunt: { color: Color3.fromRGB(255, 160, 40), emoji: "🚀", glyph: "➤", label: "Shunt", directional: true },
+	nitro: { color: Color3.fromRGB(190, 90, 255), emoji: "🔥", glyph: "▲", label: "Nitro", directional: false },
+	mine: { color: Color3.fromRGB(255, 220, 60), emoji: "💣", glyph: "✹", label: "Mine", directional: true },
+	barge: { color: Color3.fromRGB(70, 120, 255), emoji: "💥", glyph: "◎", label: "Barge", directional: false },
 };
 
 export const MAX_SLOTS = 3;
@@ -34,6 +36,7 @@ export const NITRO_DURATION = 2.5;
 export const NITRO_SPEED_MULT = 1.4;
 export const NITRO_BOOST_ACCEL = 90; // extra forward accel (studs/s^2) while boosting
 export const BARGE_RADIUS = 30;
+export const PAD_RESPAWN_SECONDS = 20;
 
 // Attributes stamped on the chassis / car model.
 export const NITRO_UNTIL_ATTR = "NitroUntil"; // Workspace.GetServerTimeNow() timestamp

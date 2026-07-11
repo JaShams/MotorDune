@@ -12,6 +12,7 @@ import {
 	MAX_SLOTS,
 	NITRO_DURATION,
 	NITRO_UNTIL_ATTR,
+	PAD_RESPAWN_SECONDS,
 	PICKUPS_FOLDER,
 	POWERUP_INFO,
 	POWERUP_TYPES,
@@ -42,7 +43,6 @@ import {
 // ---------------------------------------------------------------------------
 
 const COLLECT_RADIUS = 12; // scaled with the buggy-sized chassis (16 studs long)
-const PAD_RESPAWN_SECONDS = 20;
 
 const BOLT_SPEED = 380;
 const BOLT_LIFETIME = 1.6;
@@ -263,26 +263,107 @@ function createPad(position: Vector3, kind: PowerupType) {
 	const model = new Instance("Model");
 	model.Name = "Pickup";
 	model.SetAttribute("Kind", kind);
+	model.SetAttribute("Active", true);
+	model.SetAttribute("RespawnAt", 0);
 
-	// Neon gem the client spins/bobs locally (server never moves it, so the
-	// idle pads cost no replication bandwidth).
-	const core = new Instance("Part");
-	core.Name = "Core";
-	core.Anchored = true;
-	core.CanCollide = false;
-	core.CanTouch = false;
-	core.CanQuery = false;
-	core.Material = Enum.Material.Neon;
-	core.Color = info.color;
-	core.Size = new Vector3(2.6, 2.6, 2.6);
-	core.CFrame = new CFrame(position).mul(CFrame.Angles(math.rad(45), 0, math.rad(45)));
-	core.Parent = model;
+	function visualPart(name: string, size: Vector3, cframe: CFrame, color: Color3, transparency: number) {
+		const part = new Instance("Part");
+		part.Name = name;
+		part.Anchored = true;
+		part.CanCollide = false;
+		part.CanTouch = false;
+		part.CanQuery = false;
+		part.CastShadow = false;
+		part.Material = Enum.Material.Neon;
+		part.Color = color;
+		part.Size = size;
+		part.CFrame = cframe;
+		part.Transparency = transparency;
+		part.SetAttribute("HomeTransparency", transparency);
+		part.Parent = model;
+		return part;
+	}
+
+	// The cube remains the legible colour source at racing distance. Two dark
+	// orbital cages make it feel manufactured instead of a generic Roblox gem;
+	// clients animate every anchored piece locally, so these cost no transform
+	// replication while idle.
+	const core = visualPart(
+		"Core",
+		new Vector3(2.6, 2.6, 2.6),
+		new CFrame(position).mul(CFrame.Angles(math.rad(45), 0, math.rad(45))),
+		info.color,
+		0,
+	);
+
+	const cageColor = Color3.fromRGB(28, 32, 42);
+	const cageRadius = 2.75;
+	for (let i = 0; i < 8; i++) {
+		const angle = (i / 8) * math.pi * 2;
+		const horizontalPos = position.add(new Vector3(math.cos(angle) * cageRadius, 0, math.sin(angle) * cageRadius));
+		visualPart(
+			"RingA",
+			new Vector3(1.55, 0.22, 0.22),
+			new CFrame(horizontalPos).mul(CFrame.Angles(0, -angle + math.pi / 2, 0)),
+			cageColor,
+			0.08,
+		);
+
+		const verticalPos = position.add(new Vector3(math.cos(angle) * cageRadius, math.sin(angle) * cageRadius, 0));
+		visualPart(
+			"RingB",
+			new Vector3(1.55, 0.22, 0.22),
+			new CFrame(verticalPos).mul(CFrame.Angles(0, 0, angle + math.pi / 2)),
+			cageColor,
+			0.08,
+		);
+	}
+
+	// A segmented footprint communicates where collection happens and remains
+	// behind as a respawn clock after the floating cell is taken.
+	const groundY = position.Y - 3.25;
+	for (let i = 0; i < 12; i++) {
+		const angle = (i / 12) * math.pi * 2;
+		const segmentPos = new Vector3(position.X + math.cos(angle) * 4.5, groundY, position.Z + math.sin(angle) * 4.5);
+		const groundSegment = visualPart(
+			"GroundSegment",
+			new Vector3(2.15, 0.12, 0.3),
+			new CFrame(segmentPos).mul(CFrame.Angles(0, -angle + math.pi / 2, 0)),
+			info.color,
+			0.32,
+		);
+		groundSegment.SetAttribute("SegmentIndex", i);
+	}
+
+	visualPart(
+		"Beacon",
+		new Vector3(0.18, 10, 0.18),
+		new CFrame(position.add(new Vector3(0, 6, 0))),
+		info.color,
+		0.68,
+	);
 
 	const light = new Instance("PointLight");
 	light.Color = info.color;
 	light.Brightness = 2;
 	light.Range = 14;
 	light.Parent = core;
+
+	const burst = new Instance("ParticleEmitter");
+	burst.Name = "CollectBurst";
+	burst.Enabled = false;
+	burst.Texture = "rbxasset://textures/particles/sparkles_main.dds";
+	burst.Color = new ColorSequence(info.color);
+	burst.LightEmission = 1;
+	burst.Lifetime = new NumberRange(0.25, 0.55);
+	burst.Speed = new NumberRange(10, 22);
+	burst.SpreadAngle = new Vector2(180, 180);
+	burst.Drag = 4;
+	burst.Size = new NumberSequence([
+		new NumberSequenceKeypoint(0, 0.65),
+		new NumberSequenceKeypoint(1, 0),
+	]);
+	burst.Parent = core;
 
 	const billboard = new Instance("BillboardGui");
 	billboard.Size = UDim2.fromScale(3, 3);
@@ -294,7 +375,11 @@ function createPad(position: Vector3, kind: PowerupType) {
 	const label = new Instance("TextLabel");
 	label.BackgroundTransparency = 1;
 	label.Size = UDim2.fromScale(1, 1);
-	label.Text = info.emoji;
+	label.Font = Enum.Font.GothamBold;
+	label.TextColor3 = info.color;
+	label.TextStrokeColor3 = Color3.fromRGB(8, 10, 16);
+	label.TextStrokeTransparency = 0.15;
+	label.Text = info.glyph;
 	label.TextScaled = true;
 	label.Parent = billboard;
 
@@ -305,7 +390,15 @@ function createPad(position: Vector3, kind: PowerupType) {
 
 function setPadVisible(pad: Pad, visible: boolean) {
 	pad.active = visible;
-	pad.core.Transparency = visible ? 0 : 1;
+	pad.model.SetAttribute("Active", visible);
+	pad.model.SetAttribute("RespawnAt", visible ? 0 : Workspace.GetServerTimeNow() + PAD_RESPAWN_SECONDS);
+	if (!visible) pad.core.FindFirstChildOfClass("ParticleEmitter")?.Emit(18);
+	for (const descendant of pad.model.GetDescendants()) {
+		if (descendant.IsA("BasePart")) {
+			const home = (descendant.GetAttribute("HomeTransparency") as number | undefined) ?? 0;
+			descendant.Transparency = visible ? home : 1;
+		}
+	}
 	pad.light.Enabled = visible;
 	const billboard = pad.core.FindFirstChildOfClass("BillboardGui");
 	if (billboard) billboard.Enabled = visible;
@@ -315,6 +408,43 @@ function setPadVisible(pad: Pad, visible: boolean) {
 // builder, so ring undulation and bowl features cannot leave pads floating.
 function spawnPads() {
 	const float = 3.5; // gem height above the ground
+	const minimumSpacing = COLLECT_RADIUS * 2 + 8;
+	const positions = new Array<Vector3>();
+
+	// Build a balanced deterministic bag before assigning locations. Complete
+	// six-item rounds contain every kind exactly once; the final partial round
+	// gives only two kinds a sixth pickup. Avoiding a repeated kind across round
+	// boundaries also means neighbouring pads around each ring never match.
+	const kinds = new Array<PowerupType>();
+	let previousKind: PowerupType | undefined;
+	while (kinds.size() < 32) {
+		const round = [...POWERUP_TYPES];
+		for (let i = round.size() - 1; i > 0; i--) {
+			const j = math.floor(rand() * (i + 1));
+			[round[i], round[j]] = [round[j], round[i]];
+		}
+		if (previousKind !== undefined && round[0] === previousKind) [round[0], round[1]] = [round[1], round[0]];
+		for (const kind of round) {
+			if (kinds.size() >= 32) break;
+			kinds.push(kind);
+			previousKind = kind;
+		}
+	}
+
+	function addPad(x: number, z: number) {
+		const position = new Vector3(x, groundYAt(x, z) + float, z);
+		positions.push(position);
+		createPad(position, kinds[positions.size() - 1]);
+	}
+
+	function isClear(x: number, z: number) {
+		for (const position of positions) {
+			const dx = position.X - x;
+			const dz = position.Z - z;
+			if (math.sqrt(dx * dx + dz * dz) < minimumSpacing) return false;
+		}
+		return true;
+	}
 
 	// Single pads around the track ring.
 	const ringPads = 14;
@@ -323,21 +453,30 @@ function spawnPads() {
 		const angle = (i / ringPads) * math.pi * 2;
 		const x = math.cos(angle) * ringRadius;
 		const z = math.sin(angle) * ringRadius;
-		const kind = POWERUP_TYPES[math.floor(rand() * POWERUP_TYPES.size()) % POWERUP_TYPES.size()];
-		createPad(new Vector3(x, groundYAt(x, z) + float, z), kind);
+		addPad(x, z);
 	}
 
-	// A scattering inside the basin for demolition brawls.
+	// Scatter the basin rings within bounded angular sectors. Rejection against
+	// every previously accepted pad protects the collection zones even if the
+	// counts or radii are tuned later; the sector centre is a deterministic
+	// fallback that is comfortably clear with today's geometry.
 	for (const [ringRadius, count] of [
 		[150, 8],
 		[280, 10],
 	] as [number, number][]) {
 		for (let i = 0; i < count; i++) {
-			const angle = (i / count) * math.pi * 2 + rand();
-			const x = math.cos(angle) * ringRadius;
-			const z = math.sin(angle) * ringRadius;
-			const kind = POWERUP_TYPES[math.floor(rand() * POWERUP_TYPES.size()) % POWERUP_TYPES.size()];
-			createPad(new Vector3(x, groundYAt(x, z) + float, z), kind);
+			const sector = (math.pi * 2) / count;
+			let angle = i * sector;
+			for (let attempt = 0; attempt < 20; attempt++) {
+				const candidate = i * sector + (rand() - 0.5) * sector * 0.65;
+				const x = math.cos(candidate) * ringRadius;
+				const z = math.sin(candidate) * ringRadius;
+				if (isClear(x, z)) {
+					angle = candidate;
+					break;
+				}
+			}
+			addPad(math.cos(angle) * ringRadius, math.sin(angle) * ringRadius);
 		}
 	}
 }
