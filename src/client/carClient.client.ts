@@ -1,15 +1,17 @@
-import { Players, RunService, UserInputService, Workspace } from "@rbxts/services";
+import { ContextActionService, Players, RunService, Workspace } from "@rbxts/services";
 import { createCarSim } from "shared/carSim";
+import { CONTROLLER_BINDINGS } from "shared/inputConfig";
 import { MATCH_PHASE_ATTR, ROUND_ELIMINATED_ATTR } from "shared/sessionConfig";
 import { localDrive } from "./carState";
 import { waitForLocalCar } from "./localCar";
+import { getDriveInput, isGameplayInputBlocked, onFlipResetRequested } from "./controlInput";
 
 // ---------------------------------------------------------------------------
 // DRIVER CLIENT
 // Hosts the shared car simulation (shared/carSim) for the local player's car.
 // The driver network-owns the chassis, so the physics must run here; this
-// script's own job is just keyboard input, the flip reset, and publishing the
-// live sim state to the other presentation scripts via localDrive.
+// script's own job is consuming the unified local input, handling flip reset,
+// and publishing live sim state to presentation scripts via localDrive.
 // ---------------------------------------------------------------------------
 
 const localPlayer = Players.LocalPlayer;
@@ -31,43 +33,6 @@ rayParams.RespectCanCollide = true;
 const flipResetCooldown = 3;
 const flipResetHeight = 3; // studs above the ground to re-drop from
 let lastFlipReset = -math.huge;
-
-let wDown = false;
-let sDown = false;
-let aDown = false;
-let dDown = false;
-let handbrakeDown = false;
-
-UserInputService.InputBegan.Connect((input, gameProcessed) => {
-	if (gameProcessed) return;
-
-	if (input.KeyCode === Enum.KeyCode.W) wDown = true;
-	if (input.KeyCode === Enum.KeyCode.S) sDown = true;
-	if (input.KeyCode === Enum.KeyCode.A) aDown = true;
-	if (input.KeyCode === Enum.KeyCode.D) dDown = true;
-	if (input.KeyCode === Enum.KeyCode.LeftShift || input.KeyCode === Enum.KeyCode.RightShift) {
-		handbrakeDown = true;
-	}
-	if (input.KeyCode === Enum.KeyCode.R) tryFlipReset();
-});
-
-UserInputService.InputEnded.Connect((input) => {
-	if (input.KeyCode === Enum.KeyCode.W) wDown = false;
-	if (input.KeyCode === Enum.KeyCode.S) sDown = false;
-	if (input.KeyCode === Enum.KeyCode.A) aDown = false;
-	if (input.KeyCode === Enum.KeyCode.D) dDown = false;
-	if (input.KeyCode === Enum.KeyCode.LeftShift || input.KeyCode === Enum.KeyCode.RightShift) {
-		handbrakeDown = false;
-	}
-});
-
-function getThrottle() {
-	return (wDown ? 1 : 0) + (sDown ? -1 : 0);
-}
-
-function getSteer() {
-	return (aDown ? 1 : 0) + (dDown ? -1 : 0);
-}
 
 function getLocalHumanoid() {
 	const character = localPlayer.Character;
@@ -104,16 +69,33 @@ function tryFlipReset() {
 	chassis.CFrame = CFrame.lookAt(target, target.add(forward));
 }
 
-// Lock the driver in: a seat exit is jump-triggered, and humanoid state
-// changes only stick on the machine simulating the character, so the driver's
-// own client turns jumping off while seated (the server re-seats as a
-// backstop if something else unseats us). Space simply does nothing seated.
-seat.GetPropertyChangedSignal("Occupant").Connect(() => {
+// Subscribe after the callback is defined: Luau locals do not hoist.
+onFlipResetRequested(tryFlipReset);
+
+// Lock the driver in: a seat exit is jump-triggered, and Roblox maps gamepad A
+// to its default jump action. A is also our powerup fire button, so consume the
+// default action above PlayerModule priority while driving; controlInput still
+// receives the raw event and fires the weapon. Pass A through while a modal is
+// open so it remains the standard GUI accept button.
+ContextActionService.BindActionAtPriority(
+	"DerbyBlockControllerJump",
+	() =>
+		isLocalPlayerDriving() && !isGameplayInputBlocked()
+			? Enum.ContextActionResult.Sink
+			: Enum.ContextActionResult.Pass,
+	false,
+	Enum.ContextActionPriority.High.Value + 1,
+	CONTROLLER_BINDINGS.fire,
+);
+
+function refreshJumpLock() {
 	const humanoid = getLocalHumanoid();
-	if (humanoid !== undefined && seat.Occupant === humanoid) {
-		humanoid.SetStateEnabled(Enum.HumanoidStateType.Jumping, false);
-	}
-});
+	if (humanoid !== undefined) humanoid.SetStateEnabled(Enum.HumanoidStateType.Jumping, seat.Occupant !== humanoid);
+}
+
+seat.GetPropertyChangedSignal("Occupant").Connect(refreshJumpLock);
+// The server may have seated the player before this LocalScript connected.
+refreshJumpLock();
 
 RunService.PreSimulation.Connect((dt) => {
 	const phase = Workspace.GetAttribute(MATCH_PHASE_ATTR);
@@ -128,7 +110,7 @@ RunService.PreSimulation.Connect((dt) => {
 		return;
 	}
 
-	sim.step(dt, { throttle: getThrottle(), steer: getSteer(), handbrake: handbrakeDown });
+	sim.step(dt, getDriveInput());
 
 	// Publish the live sim state for this client's presentation scripts.
 	localDrive.driving = true;

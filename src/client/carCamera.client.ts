@@ -1,5 +1,6 @@
-import { Players, RunService, UserInputService, Workspace } from "@rbxts/services";
+import { Players, RunService, Workspace } from "@rbxts/services";
 import { waitForLocalCar } from "./localCar";
+import { isLookBackHeld } from "./controlInput";
 
 const localPlayer = Players.LocalPlayer;
 const { car, chassis, seat } = waitForLocalCar();
@@ -27,18 +28,6 @@ let lastFlatHeading = chassis.CFrame.LookVector;
 // the car stays exactly baseDistance — a position lerp lags a moving target by
 // ~speed/stiffness studs, which reads as zooming out at speed.
 let smoothedViewHeading = lastFlatHeading;
-
-// Hold C to look behind you (the rear threat indicator tells you when to).
-let lookBack = false;
-
-UserInputService.InputBegan.Connect((input, gameProcessed) => {
-	if (gameProcessed) return;
-	if (input.KeyCode === Enum.KeyCode.C) lookBack = true;
-});
-
-UserInputService.InputEnded.Connect((input) => {
-	if (input.KeyCode === Enum.KeyCode.C) lookBack = false;
-});
 
 function getHumanoid() {
 	return localPlayer.Character?.FindFirstChildOfClass("Humanoid");
@@ -86,6 +75,7 @@ RunService.RenderStepped.Connect((dt) => {
 
 	// Looking back mirrors the whole rig through the car: camera out front,
 	// aimed behind — same distances, so releasing C swings straight home.
+	const lookBack = isLookBackHeld();
 	const targetHeading = lookBack ? heading.mul(-1) : heading;
 
 	// Framerate-independent smoothing of the view direction so it feels the

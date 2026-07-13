@@ -1,4 +1,4 @@
-import { Players, ReplicatedStorage, RunService, Workspace } from "@rbxts/services";
+import { GuiService, Players, ReplicatedStorage, RunService, Workspace } from "@rbxts/services";
 import {
 	DEFAULT_RULES,
 	MATCH_ENDS_AT_ATTR,
@@ -11,6 +11,13 @@ import {
 	SESSION_UPDATE,
 	SKINS,
 } from "shared/sessionConfig";
+import {
+	getInputScheme,
+	onInputSchemeChanged,
+	onMenuCancelRequested,
+	onMenuToggleRequested,
+	setGameplayInputBlocked,
+} from "./controlInput";
 
 const player = Players.LocalPlayer;
 const folder = ReplicatedStorage.WaitForChild(SESSION_REMOTES);
@@ -87,11 +94,12 @@ timer.TextScaled = false;
 timer.TextStrokeTransparency = 0.45;
 
 let manualOpen = false;
-const menuToggle = button(gui, "PRIVATE MATCH", UDim2.fromOffset(170, 14), () => {
+const togglePrivateMatch = () => {
 	manualOpen = !shade.Visible;
 	shade.Visible = manualOpen;
 	title.Text = "PRIVATE MATCH";
-});
+};
+const menuToggle = button(gui, "PRIVATE MATCH", UDim2.fromOffset(170, 14), togglePrivateMatch);
 menuToggle.Size = UDim2.fromOffset(180, 40);
 menuToggle.AnchorPoint = Vector2.zero;
 menuToggle.Position = UDim2.fromOffset(14, 14);
@@ -104,7 +112,7 @@ function cycle<T extends defined>(values: ReadonlyArray<T>, current: T) {
 	return values[(index + 1) % values.size()];
 }
 
-button(panel, "CLOSE / KEEP PLAYING", UDim2.fromOffset(215, 82), () => {
+const close = button(panel, "CLOSE / KEEP PLAYING", UDim2.fromOffset(215, 82), () => {
 	manualOpen = false;
 	shade.Visible = false;
 });
@@ -136,7 +144,7 @@ const bots = button(panel, "BOTS: 3", UDim2.fromOffset(215, 322), () => {
 	rules.botCount = (rules.botCount + 1) % 4;
 	bots.Text = `BOTS: ${rules.botCount}`;
 });
-button(panel, "CREATE PRIVATE GAME", UDim2.fromOffset(215, 382), () => {
+const create = button(panel, "CREATE PRIVATE GAME", UDim2.fromOffset(215, 382), () => {
 	status.Text = "Creating private game…";
 	request.FireServer("create", { rules, skinId: SKINS[skinIndex].id });
 });
@@ -163,6 +171,76 @@ const returnPublic = button(panel, "RETURN TO PUBLIC", UDim2.fromOffset(215, 510
 	request.FireServer("public");
 });
 returnPublic.Visible = false;
+
+// Explicit navigation keeps the two-column join row deterministic on console;
+// automatic nearest-neighbour navigation can otherwise jump to the HUD behind
+// the modal when the return button is hidden.
+close.SelectionOrder = 1;
+skin.SelectionOrder = 2;
+mode.SelectionOrder = 3;
+values.SelectionOrder = 4;
+bots.SelectionOrder = 5;
+create.SelectionOrder = 6;
+codeBox.SelectionOrder = 7;
+join.SelectionOrder = 8;
+returnPublic.SelectionOrder = 9;
+
+close.NextSelectionDown = skin;
+skin.NextSelectionUp = close;
+skin.NextSelectionDown = mode;
+mode.NextSelectionUp = skin;
+mode.NextSelectionDown = values;
+values.NextSelectionUp = mode;
+values.NextSelectionDown = bots;
+bots.NextSelectionUp = values;
+bots.NextSelectionDown = create;
+create.NextSelectionUp = bots;
+create.NextSelectionDown = codeBox;
+codeBox.NextSelectionUp = create;
+codeBox.NextSelectionRight = join;
+join.NextSelectionUp = create;
+join.NextSelectionLeft = codeBox;
+
+function refreshLowerNavigation() {
+	const lowerControl: GuiObject = returnPublic.Visible ? returnPublic : close;
+	codeBox.NextSelectionDown = lowerControl;
+	join.NextSelectionDown = lowerControl;
+	if (returnPublic.Visible) {
+		returnPublic.NextSelectionUp = codeBox;
+		returnPublic.NextSelectionDown = close;
+		close.NextSelectionUp = returnPublic;
+	} else {
+		close.NextSelectionUp = join;
+	}
+}
+
+returnPublic.GetPropertyChangedSignal("Visible").Connect(refreshLowerNavigation);
+refreshLowerNavigation();
+
+function refreshModalInput() {
+	setGameplayInputBlocked(shade.Visible);
+	if (!shade.Visible) {
+		if (GuiService.SelectedObject?.IsDescendantOf(panel)) GuiService.SelectedObject = undefined;
+		return;
+	}
+	if (getInputScheme() === "gamepad") {
+		const selected = GuiService.SelectedObject;
+		if (selected === undefined || !selected.IsDescendantOf(panel) || !selected.Visible) GuiService.SelectedObject = close;
+	}
+}
+
+shade.GetPropertyChangedSignal("Visible").Connect(refreshModalInput);
+onInputSchemeChanged(refreshModalInput);
+onMenuToggleRequested(togglePrivateMatch);
+onMenuCancelRequested(() => {
+	if (!shade.Visible) return;
+	manualOpen = false;
+	shade.Visible = false;
+});
+codeBox.FocusLost.Connect(() => {
+	if (shade.Visible && getInputScheme() === "gamepad") GuiService.SelectedObject = join;
+});
+refreshModalInput();
 
 update.OnClientEvent.Connect((kindArg, bodyArg) => {
 	const kind = tostring(kindArg);

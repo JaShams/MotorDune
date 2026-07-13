@@ -124,9 +124,12 @@ wheelSpin }`. **Read the header comment block before tuning anything** —
 
 ## Client (`src/client/`)
 
-- **`carClient.client.ts`** — hosts the sim for the local player's car:
-  WASD + handbrake input, R = flip reset (3 s cooldown), publishes live sim
-  state via `carState.localDrive`.
+- **`controlInput.ts` / `carClient.client.ts`** — central client input state
+  feeds the local car simulation: keyboard keeps WASD/Shift/R while controller
+  uses analogue triggers + left stick, B handbrake and Y flip reset. The input
+  layer also gates gameplay behind session modals and publishes device changes
+  for adaptive HUD prompts; `carClient` publishes live sim state via
+  `carState.localDrive`.
 - **`carState.ts`** — `localDrive`: tiny mutable handoff object (driving,
   steerAngle, throttle, handbrake, wheelSpin) from the driving sim to
   same-client presentation scripts. Remote clients never see it — they
@@ -141,9 +144,10 @@ wheelSpin }`. **Read the header comment block before tuning anything** —
 - **`hudClient.client.ts`** — ScreenGui: health bar (reads the `Health`
   attribute), powerup slot display, points leaderboard combining player
   `leaderstats` with replicated bot scores.
-- **`powerupClient.client.ts`** — fire input (slot keys, backward-fire for
-  directional powerups) → `UsePowerup` remote; applies `Knock` impulses
-  locally since this client owns the chassis.
+- **`powerupClient.client.ts`** — keyboard fires slots directly; controller
+  cycles an occupied-slot selection and fires it with Blur-style alternate
+  direction from the left stick. Both paths call `UsePowerup`; the script also
+  applies `Knock` impulses locally since this client owns the chassis.
 - **`overheadHealth.client.ts`** — billboard health bar + driver name above
   every car (hidden on your own; bots keep their server-made BotTag).
 

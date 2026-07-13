@@ -10,6 +10,8 @@ import {
 	POINTS_NAME,
 } from "shared/healthConfig";
 import { FX_FOLDER } from "shared/powerupConfig";
+import { CONTROLLER_BINDINGS } from "shared/inputConfig";
+import { controllerButtonLabel, getInputScheme } from "./controlInput";
 import { waitForLocalCar } from "./localCar";
 
 const localPlayer = Players.LocalPlayer;
@@ -335,7 +337,9 @@ RunService.RenderStepped.Connect(() => {
 		// Flash so it reads as danger even in peripheral vision.
 		const pulse = (math.sin(os.clock() * 12) + 1) / 2;
 		threatPill.Visible = true;
-		pillText.Text = "🚀 INCOMING — C to look back";
+		const lookBackControl =
+			getInputScheme() === "gamepad" ? controllerButtonLabel(CONTROLLER_BINDINGS.lookBack) : "C";
+		pillText.Text = `🚀 INCOMING — ${lookBackControl} to look back`;
 		pillText.TextColor3 = INCOMING_COLOR;
 		pillStroke.Color = INCOMING_COLOR;
 		pillStroke.Transparency = pulse * 0.7;

@@ -1,4 +1,4 @@
-import { Players, ReplicatedStorage, RunService, TweenService, UserInputService, Workspace } from "@rbxts/services";
+import { Players, ReplicatedStorage, RunService, TweenService, Workspace } from "@rbxts/services";
 import {
 	decodeSlot,
 	KNOCK_REMOTE,
@@ -10,6 +10,16 @@ import {
 	SLOT_ATTRS,
 	USE_REMOTE,
 } from "shared/powerupConfig";
+import { CONTROLLER_BINDINGS } from "shared/inputConfig";
+import {
+	controllerButtonImage,
+	controllerButtonLabel,
+	getInputScheme,
+	isRearFireHeld,
+	onCyclePowerupRequested,
+	onFireRequested,
+	onInputSchemeChanged,
+} from "./controlInput";
 import { waitForLocalCar } from "./localCar";
 
 const localPlayer = Players.LocalPlayer;
@@ -36,29 +46,54 @@ knockRemote.OnClientEvent.Connect((chassisArg, deltaVArg, angularArg) => {
 });
 
 // ---------------------------------------------------------------------------
-// Firing input. 1/2/3 fires that slot forward; hold LeftControl to fire
-// bolt/shunt/mine backwards instead.
+// Firing input. Keyboard keeps direct 1/2/3 access. Controller follows Blur's
+// selected-weapon model: LB or X cycles occupied slots and A fires; pulling
+// the left stick back supplies the directional rear-fire modifier.
 // ---------------------------------------------------------------------------
-const SLOT_KEYS: ReadonlyArray<Enum.KeyCode> = [Enum.KeyCode.One, Enum.KeyCode.Two, Enum.KeyCode.Three];
+let selectedSlot = 0;
 
 function isDriving() {
 	const humanoid = localPlayer.Character?.FindFirstChildOfClass("Humanoid");
 	return humanoid !== undefined && seat.Occupant === humanoid;
 }
 
-UserInputService.InputBegan.Connect((input, gameProcessed) => {
-	if (gameProcessed) return;
-	if (!isDriving()) return;
+function slotAt(index: number) {
+	return decodeSlot((car.GetAttribute(SLOT_ATTRS[index]) as string | undefined) ?? "");
+}
 
-	for (let i = 0; i < MAX_SLOTS; i++) {
-		if (input.KeyCode === SLOT_KEYS[i]) {
-			const backward =
-				UserInputService.IsKeyDown(Enum.KeyCode.LeftControl) ||
-				UserInputService.IsKeyDown(Enum.KeyCode.RightControl);
-			useRemote.FireServer(i + 1, backward);
+function selectNextOccupied() {
+	for (let offset = 1; offset <= MAX_SLOTS; offset++) {
+		const candidate = (selectedSlot + offset) % MAX_SLOTS;
+		if (slotAt(candidate) !== undefined) {
+			selectedSlot = candidate;
+			return true;
 		}
 	}
-});
+	return false;
+}
+
+function ensureOccupiedSelection() {
+	if (slotAt(selectedSlot) !== undefined) return true;
+	for (let i = 0; i < MAX_SLOTS; i++) {
+		if (slotAt(i) !== undefined) {
+			selectedSlot = i;
+			return true;
+		}
+	}
+	return false;
+}
+
+function fireRequested(directSlot: 1 | 2 | 3 | undefined) {
+	if (!isDriving()) return;
+	const index = directSlot !== undefined ? directSlot - 1 : ensureOccupiedSelection() ? selectedSlot : undefined;
+	if (index === undefined) return;
+	const slot = slotAt(index);
+	if (!slot) return;
+	const backward = POWERUP_INFO[slot.kind].directional && isRearFireHeld();
+	useRemote.FireServer(index + 1, backward);
+}
+
+onFireRequested(fireRequested);
 
 // ---------------------------------------------------------------------------
 // HUD: a compact desert-tech weapon rack. It deliberately uses native UI
@@ -110,14 +145,16 @@ interface SlotUi {
 	accent: Frame;
 	pips: ReadonlyArray<Frame>;
 	direction: TextLabel;
+	key: TextLabel;
+	keyImage: ImageLabel;
+	selectionStroke: UIStroke;
 	baseSize: UDim2;
 }
 
 const slotUis = new Array<SlotUi>();
 
 for (let i = 0; i < MAX_SLOTS; i++) {
-	const isPrimary = i === 1;
-	const baseSize = UDim2.fromOffset(isPrimary ? 98 : 82, isPrimary ? 88 : 76);
+	const baseSize = UDim2.fromOffset(90, 82);
 	const frame = new Instance("Frame");
 	frame.Size = baseSize;
 	frame.BackgroundColor3 = Color3.fromRGB(12, 14, 22);
@@ -136,10 +173,16 @@ for (let i = 0; i < MAX_SLOTS; i++) {
 	shade.Parent = frame;
 
 	const stroke = new Instance("UIStroke");
-	stroke.Thickness = isPrimary ? 2.5 : 2;
+	stroke.Thickness = 2;
 	stroke.Color = Color3.fromRGB(70, 80, 100);
 	stroke.Transparency = 0.28;
 	stroke.Parent = frame;
+
+	const selectionStroke = new Instance("UIStroke");
+	selectionStroke.Thickness = 3;
+	selectionStroke.Color = Color3.fromRGB(255, 235, 170);
+	selectionStroke.Transparency = 1;
+	selectionStroke.Parent = frame;
 
 	const accent = new Instance("Frame");
 	accent.AnchorPoint = new Vector2(0.5, 1);
@@ -175,13 +218,23 @@ for (let i = 0; i < MAX_SLOTS; i++) {
 	keyStroke.Thickness = 1;
 	keyStroke.Parent = key;
 
+	const keyImage = new Instance("ImageLabel");
+	keyImage.BackgroundTransparency = 1;
+	keyImage.AnchorPoint = new Vector2(0.5, 0.5);
+	keyImage.Position = UDim2.fromScale(0.5, 0.5);
+	keyImage.Size = UDim2.fromOffset(18, 18);
+	keyImage.ScaleType = Enum.ScaleType.Fit;
+	keyImage.Visible = false;
+	keyImage.ZIndex = 5;
+	keyImage.Parent = key;
+
 	const icon = new Instance("TextLabel");
 	icon.BackgroundTransparency = 1;
 	icon.AnchorPoint = new Vector2(0.5, 0);
-	icon.Position = new UDim2(0.5, 0, 0, isPrimary ? 7 : 5);
-	icon.Size = UDim2.fromOffset(isPrimary ? 48 : 40, isPrimary ? 48 : 40);
+	icon.Position = new UDim2(0.5, 0, 0, 6);
+	icon.Size = UDim2.fromOffset(44, 44);
 	icon.Font = Enum.Font.GothamBold;
-	icon.TextSize = isPrimary ? 40 : 33;
+	icon.TextSize = 36;
 	icon.Text = "";
 	icon.TextStrokeTransparency = 0.65;
 	icon.Parent = frame;
@@ -192,7 +245,7 @@ for (let i = 0; i < MAX_SLOTS; i++) {
 	name.Position = new UDim2(0.5, 0, 1, -9);
 	name.Size = UDim2.fromOffset(76, 16);
 	name.Font = Enum.Font.GothamBold;
-	name.TextSize = isPrimary ? 12 : 11;
+	name.TextSize = 11;
 	name.TextColor3 = new Color3(1, 1, 1);
 	name.Text = "";
 	name.Parent = frame;
@@ -234,7 +287,22 @@ for (let i = 0; i < MAX_SLOTS; i++) {
 	direction.Visible = false;
 	direction.Parent = frame;
 
-	slotUis.push({ frame, stroke, icon, name, accent, pips, direction, baseSize });
+	slotUis.push({ frame, stroke, icon, name, accent, pips, direction, key, keyImage, selectionStroke, baseSize });
+}
+
+function refreshInputPresentation() {
+	const gamepad = getInputScheme() === "gamepad";
+	const fireImage = gamepad ? controllerButtonImage(CONTROLLER_BINDINGS.fire) : "";
+	for (let i = 0; i < MAX_SLOTS; i++) {
+		const ui = slotUis[i];
+		const selected = gamepad && i === selectedSlot;
+		ui.selectionStroke.Transparency = selected ? 0 : 1;
+		ui.key.Visible = !gamepad || selected;
+		ui.key.Text = gamepad ? controllerButtonLabel(CONTROLLER_BINDINGS.fire) : tostring(i + 1);
+		ui.key.TextTransparency = gamepad && fireImage !== "" ? 1 : 0;
+		ui.keyImage.Image = fireImage;
+		ui.keyImage.Visible = selected && fireImage !== "";
+	}
 }
 
 function refreshSlot(index: number, animate = false) {
@@ -290,6 +358,9 @@ for (let i = 0; i < MAX_SLOTS; i++) {
 	car.GetAttributeChangedSignal(SLOT_ATTRS[i]).Connect(() => {
 		const nextValue = (car.GetAttribute(SLOT_ATTRS[i]) as string | undefined) ?? "";
 		const acquired = previous === "" && nextValue !== "";
+		const consumedSelection = i === selectedSlot && previous !== "" && nextValue === "";
+		if (acquired && slotAt(selectedSlot) === undefined) selectedSlot = i;
+		if (consumedSelection) selectNextOccupied();
 		refreshSlot(i, acquired);
 		if (!acquired && previous !== nextValue) {
 			const ui = slotUis[i];
@@ -303,21 +374,29 @@ for (let i = 0; i < MAX_SLOTS; i++) {
 			);
 		}
 		previous = nextValue;
+		refreshInputPresentation();
 	});
 }
+
+ensureOccupiedSelection();
+refreshInputPresentation();
+onCyclePowerupRequested(() => {
+	if (!isDriving() || !selectNextOccupied()) return;
+	refreshInputPresentation();
+});
+onInputSchemeChanged(refreshInputPresentation);
 
 // Directional affordances only appear when relevant. Holding Ctrl turns the
 // subdued rear arrow into an amber confirmation before the player fires.
 RunService.RenderStepped.Connect(() => {
-	const rearHeld =
-		UserInputService.IsKeyDown(Enum.KeyCode.LeftControl) || UserInputService.IsKeyDown(Enum.KeyCode.RightControl);
+	const rearHeld = isRearFireHeld();
 	let hasDirectional = false;
 	for (let i = 0; i < MAX_SLOTS; i++) {
 		const slot = decodeSlot((car.GetAttribute(SLOT_ATTRS[i]) as string | undefined) ?? "");
 		const directional = slot !== undefined && POWERUP_INFO[slot.kind].directional;
 		slotUis[i].direction.Visible = directional;
 		if (directional) {
-			hasDirectional = true;
+			if (getInputScheme() === "keyboard" || i === selectedSlot) hasDirectional = true;
 			slotUis[i].direction.Text = rearHeld ? "◀" : "↕";
 			slotUis[i].direction.TextColor3 = rearHeld
 				? Color3.fromRGB(255, 175, 55)
@@ -325,6 +404,11 @@ RunService.RenderStepped.Connect(() => {
 		}
 	}
 	hint.Visible = isDriving() && hasDirectional;
+	hint.Size = UDim2.fromOffset(getInputScheme() === "gamepad" ? 310 : 170, 22);
+	hint.Text =
+		getInputScheme() === "gamepad"
+			? `${controllerButtonLabel(CONTROLLER_BINDINGS.cyclePrimary)}/${controllerButtonLabel(CONTROLLER_BINDINGS.cycleAlternate)} SWITCH   ${controllerButtonLabel(CONTROLLER_BINDINGS.fire)} FIRE   LS↓ REAR`
+			: "CTRL   ◀  REAR FIRE";
 	hint.TextColor3 = rearHeld ? Color3.fromRGB(255, 175, 55) : Color3.fromRGB(180, 190, 205);
 });
 
