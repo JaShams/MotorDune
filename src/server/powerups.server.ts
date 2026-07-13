@@ -34,6 +34,7 @@ import {
 	WRECK_BONUS_POINTS,
 	WRECK_RESET_SECONDS,
 } from "shared/healthConfig";
+import { recordHit, recordPickup } from "./analytics";
 
 // ---------------------------------------------------------------------------
 // Blur-style power-ups. Pads float above the track; driving through one adds
@@ -192,7 +193,10 @@ function damageCar(car: Model, amount: number, attacker?: Model) {
 	car.SetAttribute(HEALTH_ATTR, newHealth);
 
 	const scoringAttacker = attacker !== undefined && attacker !== car ? attacker : undefined;
-	if (scoringAttacker) addCarPoints(scoringAttacker, math.floor(amount));
+	if (scoringAttacker) {
+		addCarPoints(scoringAttacker, math.floor(amount));
+		recordHit(scoringAttacker);
+	}
 
 	if (newHealth <= 0) wreckCar(car, scoringAttacker);
 }
@@ -491,6 +495,7 @@ function startPickupLoop() {
 					if (chassis.Position.sub(pad.position).Magnitude > COLLECT_RADIUS) continue;
 					if (!addToInventory(car, pad.kind)) continue; // inventory full: leave the pad
 
+					recordPickup(car);
 					setPadVisible(pad, false);
 					task.delay(PAD_RESPAWN_SECONDS, () => setPadVisible(pad, true));
 					break;

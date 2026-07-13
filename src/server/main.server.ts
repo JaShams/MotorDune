@@ -3,6 +3,7 @@ import { SPAWN_HEIGHT, SPAWN_RADIUS } from "shared/arenaConfig";
 import { createCarSim } from "shared/carSim";
 import { HEALTH_ATTR } from "shared/healthConfig";
 import { MAX_PLAYERS, OWNER_USER_ID_ATTR, SKIN_ID_ATTR, skinColor } from "shared/sessionConfig";
+import { recordSeated } from "./analytics";
 import { buildCar, groundedSpawnCFrame, keepInWorld, waitForArenaReady } from "./carFactory";
 
 interface PlayerCar {
@@ -34,9 +35,14 @@ function ringSpawn(index: number) {
 }
 
 function setOwner(entry: PlayerCar) {
+	// Occupant can change while Roblox tears the model down during a server
+	// shutdown. Network-ownership APIs reject parts that have already left
+	// Workspace, so the late signal has nothing left to normalise.
+	if (!entry.chassis.IsDescendantOf(Workspace)) return;
 	const character = entry.seat.Occupant?.Parent;
 	const driver = character ? Players.GetPlayerFromCharacter(character) : undefined;
 	entry.chassis.SetNetworkOwner(driver === entry.player ? entry.player : undefined);
+	if (driver === entry.player) recordSeated(entry.player);
 }
 
 function seatPlayer(entry: PlayerCar) {
