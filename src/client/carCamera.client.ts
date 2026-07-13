@@ -1,10 +1,8 @@
 import { Players, RunService, UserInputService, Workspace } from "@rbxts/services";
-import { CAR_NAME, CHASSIS_NAME, SEAT_NAME } from "shared/carConfig";
+import { waitForLocalCar } from "./localCar";
 
 const localPlayer = Players.LocalPlayer;
-const car = Workspace.WaitForChild(CAR_NAME) as Model;
-const chassis = car.WaitForChild(CHASSIS_NAME) as BasePart;
-const seat = car.WaitForChild(SEAT_NAME) as VehicleSeat;
+const { car, chassis, seat } = waitForLocalCar();
 
 // ---------------------------------------------------------------------------
 // ARCADE CHASE CAMERA

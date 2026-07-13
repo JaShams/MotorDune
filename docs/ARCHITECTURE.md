@@ -4,15 +4,37 @@ Roblox demolition-derby game built with **roblox-ts 3.x**. TypeScript in
 `src/` compiles to Luau in `out/`, which `default.project.json` (Rojo) maps
 into the place:
 
-| Source          | Destination                                | Runs on |
-|-----------------|--------------------------------------------|---------|
-| `src/server/`   | `ServerScriptService.TS`                   | server  |
-| `src/client/`   | `StarterPlayer.StarterPlayerScripts.TS`    | each client |
-| `src/shared/`   | `ReplicatedStorage.TS`                     | both    |
+| Source        | Destination                             | Runs on     |
+| ------------- | --------------------------------------- | ----------- |
+| `src/server/` | `ServerScriptService.TS`                | server      |
+| `src/client/` | `StarterPlayer.StarterPlayerScripts.TS` | each client |
+| `src/shared/` | `ReplicatedStorage.TS`                  | both        |
 
 `*.server.ts` / `*.client.ts` are entry scripts; plain `.ts` files are
 modules. `default.project.json` also pins place settings: Lighting
 `Technology = Future`, `StreamingEnabled = false`, HttpService enabled.
+
+## Multiplayer sessions
+
+The experience uses one place. Normal Roblox matchmaking puts players directly
+into public arena servers, including rounds already in progress. Each server
+runs recurring three-minute rounds, shows results for ten seconds, resets the
+round score/state, and starts again; a late arrival simply begins the current
+round at zero points.
+
+Private matches use reserved servers of this same place, not a separate lobby
+place. Creating a private match reserves `game.PlaceId`, stores a six-character
+join code in MemoryStore, and teleports the host into that instance. Joining by
+code resolves the reserved access code and performs the same-place teleport.
+The code is ephemeral and expires after six hours. A player can return to
+normal public matchmaking from the private-match panel. Teleports cannot be
+playtested in Studio; the recurring public/studio round loop can.
+
+Player cars are no longer identified by the singleton `Car` name. Every car
+has an `OwnerUserId` attribute and is named `Car_<userId>`; each client finds
+its own model through that attribute. Bots retain `IsBot = true`. Humans plus
+bots are capped at eight active cars, and late-arriving humans retire bots if
+necessary.
 
 ## The one idea everything hangs off: network ownership
 
@@ -24,7 +46,7 @@ else don't stick. Concretely:
   (`main.server.ts` sets ownership on seat occupancy change) and
   `carClient.client.ts` steps the sim there.
 - **Bot cars**: chassis stays server-owned; `bots.server.ts` steps the same
-  sim server-side. Bots therefore obey *identical* physics to the player.
+  sim server-side. Bots therefore obey _identical_ physics to the player.
 - **Empty player car**: server owns it and `main.server.ts` steps an "idle
   sim" with centred inputs so the car stands on its suspension instead of
   resting on its collider box. A wrecked car (Health 0) gets no input so it
@@ -47,7 +69,7 @@ else don't stick. Concretely:
   Forces delivered through per-wheel VectorForce constraints at a roll-centre
   point, updated in `RunService.PreSimulation`. Drifting is emergent, not
   scripted. Exposes `createCarSim(car, chassis)` → `{ step(dt, input?),
-  wheelSpin }`. **Read the header comment block before tuning anything** —
+wheelSpin }`. **Read the header comment block before tuning anything** —
   spring/damper values are mass-scaled and the damper has a documented
   stability ceiling.
 - **`arenaConfig.ts`** — deterministic crater surface as pure math:
@@ -110,7 +132,7 @@ else don't stick. Concretely:
   same-client presentation scripts. Remote clients never see it — they
   reconstruct from replicated data (chassis velocity, mirrored seat Steer).
 - **`carCamera.client.ts`** — arcade chase camera: swings behind the heading
-  at fixed distance/FOV; smooths the *view direction*, not position, so speed
+  at fixed distance/FOV; smooths the _view direction_, not position, so speed
   doesn't read as zoom-out; occlusion raycast respects CanCollide.
 - **`wheelVisuals.client.ts`** — wheels are anchored cosmetic parts, so every
   client poses all four wheels of **every** car each frame: suspension travel
@@ -127,10 +149,10 @@ else don't stick. Concretely:
 
 ## State & communication summary
 
-| Channel | Used for |
-|---------|----------|
+| Channel                                                                                                        | Used for                                                                            |
+| -------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
 | Attributes on car model/chassis (`Health`, `Slot1..3`, `NitroUntil`, `ShieldUntil`, `ArenaReady` on Workspace) | replicated state; clients read, server (or driving client for nitro physics) reacts |
-| `PowerupRemotes.UsePowerup` (client→server) | fire slot N, optional backward |
-| `PowerupRemotes.Knock` (server→driving client) | delta-v on player-owned chassis |
-| `ServerStorage.BotUsePowerup` (bindable) | bots fire powerups through the same server path |
-| `carState.localDrive` (same-client module) | sim → visuals/HUD handoff |
+| `PowerupRemotes.UsePowerup` (client→server)                                                                    | fire slot N, optional backward                                                      |
+| `PowerupRemotes.Knock` (server→driving client)                                                                 | delta-v on player-owned chassis                                                     |
+| `ServerStorage.BotUsePowerup` (bindable)                                                                       | bots fire powerups through the same server path                                     |
+| `carState.localDrive` (same-client module)                                                                     | sim → visuals/HUD handoff                                                           |

@@ -1,9 +1,16 @@
-import { RunService, ServerStorage, Workspace } from "@rbxts/services";
+import { Players, RunService, ServerStorage, Workspace } from "@rbxts/services";
 import { groundY, SPAWN_HEIGHT, SPAWN_RADIUS } from "shared/arenaConfig";
 import { CHASSIS_NAME, MAX_STEER_ANGLE, SEAT_NAME } from "shared/carConfig";
 import { CarDriveInput, CarSim, createCarSim } from "shared/carSim";
 import { BOT_LABEL_ATTR, BOT_POINTS_ATTR, HEALTH_ATTR, MAX_HEALTH } from "shared/healthConfig";
 import { BOT_USE_EVENT, decodeSlot, SLOT_ATTRS } from "shared/powerupConfig";
+import {
+	CONFIGURED_BOTS_ATTR,
+	MATCH_PHASE_ATTR,
+	MAX_BOTS,
+	MAX_PLAYERS,
+	ROUND_ELIMINATED_ATTR,
+} from "shared/sessionConfig";
 import { buildCar, groundedSpawnCFrame, keepInWorld, waitForArenaReady } from "./carFactory";
 
 // ---------------------------------------------------------------------------
@@ -295,7 +302,13 @@ waitForArenaReady();
 const botUse = ServerStorage.WaitForChild(BOT_USE_EVENT) as BindableEvent;
 
 const bots = new Array<Bot>();
-for (let i = 0; i < BOT_SPECS.size(); i++) {
+const requestedBots = math.clamp(
+	(Workspace.GetAttribute(CONFIGURED_BOTS_ATTR) as number | undefined) ?? MAX_BOTS,
+	0,
+	MAX_BOTS,
+);
+const botCount = math.min(requestedBots, math.max(0, MAX_PLAYERS - Players.GetPlayers().size()));
+for (let i = 0; i < botCount; i++) {
 	const spec = BOT_SPECS[i];
 	const angle = ((i + 1) / (BOT_SPECS.size() + 1)) * math.pi * 2;
 	const spawnCFrame = groundedSpawnCFrame(ringSpawnCFrame(angle));
@@ -336,6 +349,19 @@ for (let i = 0; i < BOT_SPECS.size(); i++) {
 
 print(`[bots] ${bots.size()} bot cars spawned`);
 
+// Public/private lobbies can receive more humans after this script initially
+// builds the requested rivals. Retire bots from the end of the roster so an
+// arriving player can never push the active-car count above eight.
+Players.PlayerAdded.Connect(() => {
+	task.defer(() => {
+		const allowed = math.max(0, MAX_PLAYERS - Players.GetPlayers().size());
+		let alive = bots.filter((bot) => bot.car.IsDescendantOf(game));
+		while (alive.size() > allowed) {
+			alive.pop()!.car.Destroy();
+		}
+	});
+});
+
 RunService.PreSimulation.Connect((dt) => {
 	const now = os.clock();
 	const cars = getCars();
@@ -348,6 +374,14 @@ RunService.PreSimulation.Connect((dt) => {
 		const speed = chassis.AssemblyLinearVelocity.Magnitude;
 		const health = carHealth(bot.car);
 		const wrecked = health <= 0;
+		if (
+			(Workspace.GetAttribute(MATCH_PHASE_ATTR) !== undefined &&
+				Workspace.GetAttribute(MATCH_PHASE_ATTR) !== "active") ||
+			bot.car.GetAttribute(ROUND_ELIMINATED_ATTR) === true
+		) {
+			bot.sim.step(dt, { throttle: 0, steer: 0, handbrake: true });
+			continue;
+		}
 
 		// Flip recovery: inverted and not sliding anywhere -> set it upright.
 		if (cf.UpVector.Y < flippedUpDot && speed < 10) {

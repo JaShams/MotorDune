@@ -1,7 +1,8 @@
 import { Players, RunService, UserInputService, Workspace } from "@rbxts/services";
-import { CAR_NAME, CHASSIS_NAME, SEAT_NAME } from "shared/carConfig";
 import { createCarSim } from "shared/carSim";
+import { MATCH_PHASE_ATTR, ROUND_ELIMINATED_ATTR } from "shared/sessionConfig";
 import { localDrive } from "./carState";
+import { waitForLocalCar } from "./localCar";
 
 // ---------------------------------------------------------------------------
 // DRIVER CLIENT
@@ -12,9 +13,7 @@ import { localDrive } from "./carState";
 // ---------------------------------------------------------------------------
 
 const localPlayer = Players.LocalPlayer;
-const car = Workspace.WaitForChild(CAR_NAME) as Model;
-const chassis = car.WaitForChild(CHASSIS_NAME) as BasePart;
-const seat = car.WaitForChild(SEAT_NAME) as VehicleSeat;
+const { car, chassis, seat } = waitForLocalCar();
 
 const sim = createCarSim(car, chassis);
 // The visuals read wheelspin through localDrive; hand them the sim's array.
@@ -117,6 +116,12 @@ seat.GetPropertyChangedSignal("Occupant").Connect(() => {
 });
 
 RunService.PreSimulation.Connect((dt) => {
+	const phase = Workspace.GetAttribute(MATCH_PHASE_ATTR);
+	if ((phase !== undefined && phase !== "active") || car.GetAttribute(ROUND_ELIMINATED_ATTR) === true) {
+		sim.step(dt, { throttle: 0, steer: 0, handbrake: true });
+		localDrive.driving = false;
+		return;
+	}
 	if (!isLocalPlayerDriving()) {
 		sim.step(dt, undefined);
 		localDrive.driving = false;

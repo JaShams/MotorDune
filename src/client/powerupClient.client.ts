@@ -1,5 +1,4 @@
 import { Players, ReplicatedStorage, RunService, TweenService, UserInputService, Workspace } from "@rbxts/services";
-import { CAR_NAME, CHASSIS_NAME, SEAT_NAME } from "shared/carConfig";
 import {
 	decodeSlot,
 	KNOCK_REMOTE,
@@ -11,11 +10,10 @@ import {
 	SLOT_ATTRS,
 	USE_REMOTE,
 } from "shared/powerupConfig";
+import { waitForLocalCar } from "./localCar";
 
 const localPlayer = Players.LocalPlayer;
-const car = Workspace.WaitForChild(CAR_NAME) as Model;
-const chassis = car.WaitForChild(CHASSIS_NAME) as BasePart;
-const seat = car.WaitForChild(SEAT_NAME) as VehicleSeat;
+const { car, chassis, seat } = waitForLocalCar();
 
 const remotes = ReplicatedStorage.WaitForChild(REMOTES_FOLDER);
 const useRemote = remotes.WaitForChild(USE_REMOTE) as RemoteEvent;

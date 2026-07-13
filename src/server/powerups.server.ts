@@ -23,6 +23,7 @@ import {
 	SLOT_ATTRS,
 	USE_REMOTE,
 } from "shared/powerupConfig";
+import { MATCH_PHASE_ATTR, OWNER_USER_ID_ATTR, ROUND_ELIMINATED_ATTR } from "shared/sessionConfig";
 import {
 	BOT_POINTS_ATTR,
 	HEALTH_ATTR,
@@ -120,7 +121,7 @@ function getDriver(car: Model): Player | undefined {
 
 function getPlayerCar(player: Player): Model | undefined {
 	for (const car of getCars()) {
-		if (getDriver(car) === player) return car;
+		if (car.GetAttribute(OWNER_USER_ID_ATTR) === player.UserId) return car;
 	}
 	return undefined;
 }
@@ -153,7 +154,8 @@ function addPoints(player: Player, amount: number) {
 }
 
 function addCarPoints(car: Model, amount: number) {
-	const driver = getDriver(car);
+	const ownerId = car.GetAttribute(OWNER_USER_ID_ATTR);
+	const driver = typeIs(ownerId, "number") ? Players.GetPlayerByUserId(ownerId) : getDriver(car);
 	if (driver) {
 		addPoints(driver, amount);
 	} else if (car.GetAttribute("IsBot") === true) {
@@ -181,6 +183,8 @@ function wreckCar(car: Model, attacker?: Model) {
 }
 
 function damageCar(car: Model, amount: number, attacker?: Model) {
+	if (Workspace.GetAttribute(MATCH_PHASE_ATTR) !== "active") return;
+	if (car.GetAttribute(ROUND_ELIMINATED_ATTR) === true) return;
 	const health = (car.GetAttribute(HEALTH_ATTR) as number | undefined) ?? MAX_HEALTH;
 	if (health <= 0) return; // already wrecked, waiting to reset
 
@@ -335,13 +339,7 @@ function createPad(position: Vector3, kind: PowerupType) {
 		groundSegment.SetAttribute("SegmentIndex", i);
 	}
 
-	visualPart(
-		"Beacon",
-		new Vector3(0.18, 10, 0.18),
-		new CFrame(position.add(new Vector3(0, 6, 0))),
-		info.color,
-		0.68,
-	);
+	visualPart("Beacon", new Vector3(0.18, 10, 0.18), new CFrame(position.add(new Vector3(0, 6, 0))), info.color, 0.68);
 
 	const light = new Instance("PointLight");
 	light.Color = info.color;
@@ -359,10 +357,7 @@ function createPad(position: Vector3, kind: PowerupType) {
 	burst.Speed = new NumberRange(10, 22);
 	burst.SpreadAngle = new Vector2(180, 180);
 	burst.Drag = 4;
-	burst.Size = new NumberSequence([
-		new NumberSequenceKeypoint(0, 0.65),
-		new NumberSequenceKeypoint(1, 0),
-	]);
+	burst.Size = new NumberSequence([new NumberSequenceKeypoint(0, 0.65), new NumberSequenceKeypoint(1, 0)]);
 	burst.Parent = core;
 
 	const billboard = new Instance("BillboardGui");
@@ -486,6 +481,7 @@ function startPickupLoop() {
 	task.spawn(() => {
 		while (true) {
 			task.wait(0.05);
+			if (Workspace.GetAttribute(MATCH_PHASE_ATTR) !== "active") continue;
 			const cars = getCars();
 			for (const pad of pads) {
 				if (!pad.active) continue;
@@ -706,7 +702,8 @@ function finishProjectile(
 ) {
 	if (!projectile.active) return;
 	projectile.active = false;
-	if (projectile.kind === "shunt" && damagingShunt) explodeShunt(position, excludeFirer ? projectile.firer : undefined);
+	if (projectile.kind === "shunt" && damagingShunt)
+		explodeShunt(position, excludeFirer ? projectile.firer : undefined);
 	projectile.part.Destroy();
 }
 
@@ -805,7 +802,8 @@ RunService.Heartbeat.Connect((dt) => {
 		if (projectile.kind === "bolt") {
 			for (const other of projectiles) {
 				if (!other.active || other.kind !== "shunt") continue;
-				if (segmentDistance(other.part.Position, projectile.part.Position, step) > SHUNT_INTERCEPT_RADIUS) continue;
+				if (segmentDistance(other.part.Position, projectile.part.Position, step) > SHUNT_INTERCEPT_RADIUS)
+					continue;
 				const popAt = other.part.Position;
 				cancelShunt(other, popAt);
 				finishProjectile(projectile, false);
@@ -815,7 +813,8 @@ RunService.Heartbeat.Connect((dt) => {
 		} else {
 			for (const mine of activeMines) {
 				if (!mine.active || now < mine.armedAt) continue;
-				if (segmentDistance(mine.part.Position, projectile.part.Position, step) > MINE_TRIGGER_RADIUS * 0.45) continue;
+				if (segmentDistance(mine.part.Position, projectile.part.Position, step) > MINE_TRIGGER_RADIUS * 0.45)
+					continue;
 				cancelShunt(projectile, mine.part.Position);
 				detonateMine(mine);
 				break;
@@ -835,7 +834,12 @@ RunService.Heartbeat.Connect((dt) => {
 		// ray for walls/terrain and rely on the proximity fuse for cars.
 		const hit =
 			projectile.kind === "bolt"
-				? Workspace.Spherecast(projectile.part.Position, BOLT_HIT_RADIUS, sweptStep, projectileRayParams(projectile.firer))
+				? Workspace.Spherecast(
+						projectile.part.Position,
+						BOLT_HIT_RADIUS,
+						sweptStep,
+						projectileRayParams(projectile.firer),
+					)
 				: Workspace.Raycast(projectile.part.Position, sweptStep, shuntPathParams(projectile.firer));
 
 		if (hit) {
@@ -1091,6 +1095,8 @@ function activateBarge(car: Model) {
 
 // --- Firing --------------------------------------------------------------------------
 function useSlot(car: Model, slotIndex: number, backward: boolean) {
+	if (Workspace.GetAttribute(MATCH_PHASE_ATTR) !== "active") return;
+	if (car.GetAttribute(ROUND_ELIMINATED_ATTR) === true) return;
 	const attr = SLOT_ATTRS[slotIndex - 1];
 	const slot = decodeSlot((car.GetAttribute(attr) as string | undefined) ?? "");
 	if (!slot) return;
@@ -1164,7 +1170,12 @@ startPickupLoop();
 
 for (const car of getCars()) initCarSlots(car);
 Workspace.ChildAdded.Connect((child) => {
-	if (child.IsA("Model") && child.FindFirstChild(CHASSIS_NAME)) initCarSlots(child);
+	if (!child.IsA("Model")) return;
+	// carFactory parents the model before inserting its chassis. Defer this
+	// shape check so dynamically spawned and late-joining cars are not missed.
+	task.defer(() => {
+		if (child.IsDescendantOf(Workspace) && child.FindFirstChild(CHASSIS_NAME)) initCarSlots(child);
+	});
 });
 
 print(`[powerups] ${pads.size()} pickup pads spawned`);

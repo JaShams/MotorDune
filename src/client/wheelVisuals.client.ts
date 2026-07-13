@@ -1,6 +1,5 @@
-import { RunService, Workspace } from "@rbxts/services";
+import { Players, RunService, Workspace } from "@rbxts/services";
 import {
-	CAR_NAME,
 	CHASSIS_NAME,
 	MAX_STEER_ANGLE,
 	SEAT_NAME,
@@ -12,6 +11,7 @@ import {
 	WHEEL_RADIUS,
 	WHEEL_WIDTH,
 } from "shared/carConfig";
+import { OWNER_USER_ID_ATTR } from "shared/sessionConfig";
 import { localDrive } from "./carState";
 
 // ---------------------------------------------------------------------------
@@ -120,7 +120,7 @@ RunService.RenderStepped.Connect((dt) => {
 		// (+1 = right, so negate for the physics' positive-is-left convention)
 		// and the same lateral-g lock the physics computes, smoothed to stand
 		// in for the driver's input ramp.
-		const isLocalDriven = localDrive.driving && car.Name === CAR_NAME;
+		const isLocalDriven = localDrive.driving && car.GetAttribute(OWNER_USER_ID_ATTR) === Players.LocalPlayer.UserId;
 		if (isLocalDriven) {
 			visual.visualSteer = localDrive.steerAngle;
 		} else {
