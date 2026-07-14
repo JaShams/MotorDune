@@ -84,8 +84,10 @@ wheelSpin }`. **Read the header comment block before tuning anything** —
   directional), 3-slot inventory encoded as string attributes `Slot1..Slot3`
   on the car model (`"bolt:3"` carries charges via `encodeSlot`/`decodeSlot`),
   effect tuning (shield 7 s, nitro 2.5 s ×1.4 speed, barge radius 30), and all
-  remote/folder names (`PowerupRemotes.UsePowerup`, `.Knock`, `Pickups`,
-  `PowerupFx`, ServerStorage bindable `BotUsePowerup`).
+  combat presentation/guidance tuning, sound IDs, feedback payloads, and all
+  remote/folder names (`PowerupRemotes.UsePowerup`, `.Knock`,
+  `.PowerupFeedback`, `Pickups`, `PowerupFx`, ServerStorage bindable
+  `BotUsePowerup`).
 
 ## Server (`src/server/`)
 
@@ -107,14 +109,17 @@ wheelSpin }`. **Read the header comment block before tuning anything** —
   reset, replicated `BotLabel`/`BotPoints` scoreboard state, and opportunistic
   powerup use via the `BotUsePowerup` bindable — the same server-side firing
   path player remotes hit.
-- **`powerups.server.ts`** (~880 lines) — pickup pads floating over the
+- **`powerups.server.ts`** (~1300 lines) — pickup pads floating over the
   track (collect radius 12, respawn 20 s), the slot inventory, and all effect
   execution: bolt/shunt projectiles, mines, barge AoE, shield/nitro timers
   (`ShieldUntil`/`NitroUntil` attributes stamped as
-  `Workspace.GetServerTimeNow()` timestamps). Owns Health: applies damage
+  `Workspace.GetServerTimeNow()` timestamps). Shunts replicate their
+  target/guidance state, lose lock on terrain or a sustained hard cut, and
+  never reacquire after a successful dodge. Owns Health: applies damage
   (shield blocks), handles wreck → 3 s flop → reset, awards points to
   `leaderstats`. Knockback goes direct to server-owned chassis (bots) or via
-  the `Knock` remote (player cars).
+  the `Knock` remote (player cars); typed feedback events drive local impact
+  presentation and attacker confirmation.
 - **`arena.server.ts`** (~1360 lines) — builds the whole desert crater
   procedurally at boot with a **deterministic seeded PRNG** (seed 1337):
   chunked smooth-terrain voxels sampled from `groundYAt`, canyon rock rim, dressing,
@@ -148,6 +153,10 @@ wheelSpin }`. **Read the header comment block before tuning anything** —
   cycles an occupied-slot selection and fires it with Blur-style alternate
   direction from the left stick. Both paths call `UsePowerup`; the script also
   applies `Knock` impulses locally since this client owns the chassis.
+- **`impactFeedback.ts`** — converts authoritative powerup feedback and actual
+  hit delta-v into camera inertia/FOV kick, screen flash, audio, hit markers,
+  shield confirmation, and gamepad rumble. `carCamera` composes the returned
+  impact-only spring onto its exact chase rig.
 - **`overheadHealth.client.ts`** — billboard health bar + driver name above
   every car (hidden on your own; bots keep their server-made BotTag).
 
@@ -158,5 +167,6 @@ wheelSpin }`. **Read the header comment block before tuning anything** —
 | Attributes on car model/chassis (`Health`, `Slot1..3`, `NitroUntil`, `ShieldUntil`, `ArenaReady` on Workspace) | replicated state; clients read, server (or driving client for nitro physics) reacts |
 | `PowerupRemotes.UsePowerup` (client→server)                                                                    | fire slot N, optional backward                                                      |
 | `PowerupRemotes.Knock` (server→driving client)                                                                 | delta-v on player-owned chassis                                                     |
+| `PowerupRemotes.PowerupFeedback` (server→affected clients)                                                     | transient victim impact/shield presentation and attacker hit confirmation           |
 | `ServerStorage.BotUsePowerup` (bindable)                                                                       | bots fire powerups through the same server path                                     |
 | `carState.localDrive` (same-client module)                                                                     | sim → visuals/HUD handoff                                                           |

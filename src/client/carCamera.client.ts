@@ -1,6 +1,7 @@
 import { Players, RunService, Workspace } from "@rbxts/services";
 import { waitForLocalCar } from "./localCar";
 import { isLookBackHeld } from "./controlInput";
+import { stepCameraImpact } from "./impactFeedback";
 
 const localPlayer = Players.LocalPlayer;
 const { car, chassis, seat } = waitForLocalCar();
@@ -98,7 +99,9 @@ RunService.RenderStepped.Connect((dt) => {
 	const anchor = carPos.add(new Vector3(0, lookHeight, 0));
 	const hit = Workspace.Raycast(anchor, camPos.sub(anchor), occlusionParams);
 	const finalCamPos = hit ? hit.Position.add(hit.Normal.mul(0.5)) : camPos;
-	camera.CFrame = CFrame.lookAt(finalCamPos, lookAt);
+	const baseCamera = CFrame.lookAt(finalCamPos, lookAt);
+	const impact = stepCameraImpact(dt, baseCamera);
+	camera.CFrame = CFrame.lookAt(finalCamPos.add(impact.worldOffset), lookAt).mul(impact.rotation);
 
-	camera.FieldOfView = baseFov;
+	camera.FieldOfView = baseFov + impact.fov;
 });

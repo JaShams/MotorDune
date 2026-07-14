@@ -4,23 +4,45 @@ import { CHASSIS_NAME, SEAT_NAME } from "shared/carConfig";
 import {
 	BARGE_RADIUS,
 	BOLT_CHARGES,
+	BOLT_HIT_RADIUS,
+	BOLT_TRAIL_WIDTH,
+	BOLT_VISUAL_SIZE,
 	BOT_USE_EVENT,
 	decodeSlot,
 	encodeSlot,
+	FEEDBACK_REMOTE,
 	FX_FOLDER,
+	GUIDANCE_ACTIVE_ATTR,
 	KNOCK_REMOTE,
 	MAX_SLOTS,
+	MINE_HOVER_HEIGHT,
+	MINE_TRIGGER_RADIUS,
+	MINE_VISUAL_DIAMETER,
 	NITRO_DURATION,
 	NITRO_UNTIL_ATTR,
 	PAD_RESPAWN_SECONDS,
 	PICKUPS_FOLDER,
 	POWERUP_INFO,
+	PowerupFeedback,
+	POWERUP_SOUND_IDS,
 	POWERUP_TYPES,
 	PowerupType,
 	REMOTES_FOLDER,
+	SHUNT_ACQUIRE_HALF_ANGLE,
+	SHUNT_BLAST_RADIUS,
+	SHUNT_BREAK_ANGLE,
+	SHUNT_BREAK_HOLD,
+	SHUNT_GUIDANCE_DELAY,
+	SHUNT_LIFETIME,
+	SHUNT_PROXIMITY,
+	SHUNT_SPEED,
+	SHUNT_TRAIL_WIDTH,
+	SHUNT_TURN_RATE,
+	SHUNT_VISUAL_SIZE,
 	SHIELD_DURATION,
 	SHIELD_UNTIL_ATTR,
 	SLOT_ATTRS,
+	TARGET_OWNER_ATTR,
 	USE_REMOTE,
 } from "shared/powerupConfig";
 import { MATCH_PHASE_ATTR, OWNER_USER_ID_ATTR, ROUND_ELIMINATED_ATTR } from "shared/sessionConfig";
@@ -50,29 +72,12 @@ const BOLT_SPEED = 380;
 const BOLT_LIFETIME = 1.6;
 const BOLT_KNOCK = 26; // delta-v (studs/s) given to a struck car
 
-const SHUNT_SPEED = 170;
-const SHUNT_LIFETIME = 5;
-// Tight enough to stay locked through a target's evasive arc: the turn radius
-// is speed/rate ~ 40 studs. (140 deg/s gave a 70-stud radius - one overshoot
-// and the missile could only orbit its target, never re-converge.)
-const SHUNT_TURN_RATE = math.rad(240); // per second
-const SHUNT_CONE = math.rad(75); // targets must be within this half-angle of fire direction
-const SHUNT_BLAST_RADIUS = 16;
-// Proximity fuse: homing converges to "almost touching" a moving car, where a
-// thin per-frame raycast can slip past the 1-stud chassis slab without ever
-// registering. Passing within this range of any car it can hurt detonates the
-// missile; the blast radius comfortably covers the near-missed victim.
-const SHUNT_PROXIMITY = 11; // ~chassis half-diagonal (9.2) + the old 1.2 margin
 const SHUNT_KNOCK = 52;
 const SHUNT_GROUND_CLEARANCE = 2.5;
 const SHUNT_INTERCEPT_RADIUS = 2.4;
-// Bolts stay dumbfire, but sweep a bolt-sized sphere instead of a zero-width
-// ray so grazing a moving car counts as the hit it looks like.
-const BOLT_HIT_RADIUS = 1.2;
 
 const MINE_ARM_DELAY = 1.2;
 const MINE_LIFETIME = 60;
-const MINE_TRIGGER_RADIUS = 11; // trips ~3 studs before the 8-stud nose touches
 const MINE_KNOCK_UP = 42;
 const MINE_KNOCK_AWAY = 28;
 
@@ -87,6 +92,9 @@ useRemote.Parent = remotes;
 const knockRemote = new Instance("RemoteEvent");
 knockRemote.Name = KNOCK_REMOTE;
 knockRemote.Parent = remotes;
+const feedbackRemote = new Instance("RemoteEvent");
+feedbackRemote.Name = FEEDBACK_REMOTE;
+feedbackRemote.Parent = remotes;
 remotes.Parent = ReplicatedStorage;
 
 const fxFolder = new Instance("Folder");
@@ -118,6 +126,11 @@ function getDriver(car: Model): Player | undefined {
 	if (!seat?.IsA("VehicleSeat")) return undefined;
 	const character = seat.Occupant?.Parent;
 	return character ? Players.GetPlayerFromCharacter(character) : undefined;
+}
+
+function getCarPlayer(car: Model) {
+	const ownerId = car.GetAttribute(OWNER_USER_ID_ATTR);
+	return typeIs(ownerId, "number") ? Players.GetPlayerByUserId(ownerId) : getDriver(car);
 }
 
 function getPlayerCar(player: Player): Model | undefined {
@@ -165,11 +178,35 @@ function addCarPoints(car: Model, amount: number) {
 	}
 }
 
+function playSpatialSound(position: Vector3, soundId: string, volume: number, playbackSpeed = 1, duration = 5) {
+	const anchor = new Instance("Part");
+	anchor.Name = "PowerupSound";
+	anchor.Anchored = true;
+	anchor.CanCollide = false;
+	anchor.CanQuery = false;
+	anchor.CanTouch = false;
+	anchor.Transparency = 1;
+	anchor.Size = new Vector3(0.1, 0.1, 0.1);
+	anchor.Position = position;
+	anchor.Parent = fxFolder;
+
+	const sound = new Instance("Sound");
+	sound.SoundId = soundId;
+	sound.Volume = volume;
+	sound.PlaybackSpeed = playbackSpeed;
+	sound.RollOffMinDistance = 18;
+	sound.RollOffMaxDistance = 180;
+	sound.Parent = anchor;
+	sound.Play();
+	task.delay(duration, () => anchor.Destroy());
+}
+
 // --- Health --------------------------------------------------------------------
 function wreckCar(car: Model, attacker?: Model) {
 	const chassis = getChassis(car);
 	if (chassis) {
 		explosionFx(chassis.Position, Color3.fromRGB(255, 120, 30), 18);
+		playSpatialSound(chassis.Position, POWERUP_SOUND_IDS.debrisImpact, 0.9, 0.88, 2.5);
 		applyKnock(car, new Vector3(0, 55, 0), new Vector3(2.5, 6, 2.5));
 	}
 
@@ -184,10 +221,10 @@ function wreckCar(car: Model, attacker?: Model) {
 }
 
 function damageCar(car: Model, amount: number, attacker?: Model) {
-	if (Workspace.GetAttribute(MATCH_PHASE_ATTR) !== "active") return;
-	if (car.GetAttribute(ROUND_ELIMINATED_ATTR) === true) return;
+	if (Workspace.GetAttribute(MATCH_PHASE_ATTR) !== "active") return false;
+	if (car.GetAttribute(ROUND_ELIMINATED_ATTR) === true) return false;
 	const health = (car.GetAttribute(HEALTH_ATTR) as number | undefined) ?? MAX_HEALTH;
-	if (health <= 0) return; // already wrecked, waiting to reset
+	if (health <= 0) return false; // already wrecked, waiting to reset
 
 	const newHealth = math.max(0, health - amount);
 	car.SetAttribute(HEALTH_ATTR, newHealth);
@@ -198,7 +235,9 @@ function damageCar(car: Model, amount: number, attacker?: Model) {
 		recordHit(scoringAttacker);
 	}
 
-	if (newHealth <= 0) wreckCar(car, scoringAttacker);
+	const wrecked = newHealth <= 0;
+	if (wrecked) wreckCar(car, scoringAttacker);
+	return wrecked;
 }
 
 // Physically shove a car. Player-driven chassis are simulated on the driver's
@@ -218,11 +257,71 @@ function applyKnock(car: Model, deltaV: Vector3, angularDeltaV = Vector3.zero) {
 	}
 }
 
+// Feedback is an action rather than durable state: the victim needs the exact
+// impulse for camera inertia, while the attacker needs a positive confirmation
+// even when the target is far off-screen.
+function sendPowerupFeedback(car: Model, feedback: PowerupFeedback) {
+	const player = getCarPlayer(car);
+	if (player) feedbackRemote.FireClient(player, feedback);
+}
+
 // A powerup hit: shield blocks both the shove and the damage; otherwise the
 // attacker (if any, and not the victim itself) earns points for the damage.
-function knockCar(car: Model, deltaV: Vector3, angularDeltaV = Vector3.zero, attacker?: Model, damage = 0) {
-	if (isShielded(car)) return;
-	if (damage > 0) damageCar(car, damage, attacker);
+function knockCar(
+	kind: PowerupType,
+	car: Model,
+	deltaV: Vector3,
+	angularDeltaV = Vector3.zero,
+	attacker?: Model,
+	damage = 0,
+) {
+	const chassis = getChassis(car);
+	if (!chassis) return;
+	if (isShielded(car)) {
+		sendPowerupFeedback(car, {
+			type: "shieldBlock",
+			role: "victim",
+			kind,
+			position: chassis.Position,
+			deltaV: Vector3.zero,
+			angularDeltaV: Vector3.zero,
+			damage: 0,
+			wrecked: false,
+		});
+		if (attacker && attacker !== car) {
+			sendPowerupFeedback(attacker, {
+				type: "shieldBlock",
+				role: "attacker",
+				kind,
+				position: chassis.Position,
+				deltaV: Vector3.zero,
+				angularDeltaV: Vector3.zero,
+				damage: 0,
+				wrecked: false,
+			});
+		}
+		return;
+	}
+	const wrecked = damage > 0 ? damageCar(car, damage, attacker) : false;
+	sendPowerupFeedback(car, {
+		type: "impact",
+		role: "victim",
+		kind,
+		position: chassis.Position,
+		deltaV,
+		angularDeltaV,
+		damage,
+		wrecked,
+	});
+	if (attacker && attacker !== car) {
+		sendPowerupFeedback(attacker, {
+			type: "hitConfirm",
+			kind,
+			position: chassis.Position,
+			damage,
+			wrecked,
+		});
+	}
 	applyKnock(car, deltaV, angularDeltaV);
 }
 
@@ -520,12 +619,29 @@ function explosionFx(position: Vector3, color: Color3, radius: number) {
 	blast.Position = position;
 	blast.Parent = fxFolder;
 
+	const attachment = new Instance("Attachment");
+	attachment.Parent = blast;
+	const sparks = new Instance("ParticleEmitter");
+	sparks.Texture = "rbxasset://textures/particles/sparkles_main.dds";
+	sparks.Color = new ColorSequence(color, Color3.fromRGB(255, 225, 175));
+	sparks.LightEmission = 0.8;
+	sparks.Lifetime = new NumberRange(0.18, 0.42);
+	sparks.Speed = new NumberRange(radius * 1.6, radius * 3);
+	sparks.Drag = 5;
+	sparks.SpreadAngle = new Vector2(180, 180);
+	sparks.Size = new NumberSequence([
+		new NumberSequenceKeypoint(0, math.clamp(radius * 0.07, 0.35, 1.2)),
+		new NumberSequenceKeypoint(1, 0),
+	]);
+	sparks.Parent = attachment;
+	sparks.Emit(math.floor(radius * 2.5));
+
 	const tween = TweenService.Create(blast, new TweenInfo(0.35, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
 		Size: new Vector3(radius * 2, radius * 2, radius * 2),
 		Transparency: 1,
 	});
 	tween.Play();
-	task.delay(0.4, () => blast.Destroy());
+	task.delay(0.5, () => blast.Destroy());
 }
 
 function attachTrail(part: BasePart, color: Color3, width: number) {
@@ -553,6 +669,8 @@ interface Projectile {
 	expiresAt: number;
 	kind: "bolt" | "shunt";
 	target?: Model;
+	guidanceStartsAt?: number;
+	offAxisSince?: number;
 	active: boolean;
 }
 
@@ -604,10 +722,11 @@ function fireBolt(car: Model, backward: boolean) {
 	bolt.CanTouch = false;
 	bolt.Material = Enum.Material.Neon;
 	bolt.Color = POWERUP_INFO.bolt.color;
-	bolt.Size = new Vector3(0.7, 0.7, 3.2);
+	bolt.Size = BOLT_VISUAL_SIZE;
 	bolt.CFrame = muzzle;
-	attachTrail(bolt, POWERUP_INFO.bolt.color, 0.7);
+	attachTrail(bolt, POWERUP_INFO.bolt.color, BOLT_TRAIL_WIDTH);
 	bolt.Parent = fxFolder;
+	playSpatialSound(muzzle.Position, POWERUP_SOUND_IDS.boltElectric, 0.34, 1.1, 1.4);
 
 	// Inherit the car's speed so bolts always outrun the shooter.
 	const carSpeed = chassis.AssemblyLinearVelocity.Dot(muzzle.LookVector);
@@ -634,7 +753,7 @@ function findShuntTarget(firer: Model, origin: Vector3, direction: Vector3): Mod
 		const distance = offset.Magnitude;
 		if (distance < 1 || distance >= bestDistance) continue;
 		const angle = math.acos(math.clamp(offset.Unit.Dot(direction), -1, 1));
-		if (angle > SHUNT_CONE) continue;
+		if (angle > SHUNT_ACQUIRE_HALF_ANGLE) continue;
 		best = car;
 		bestDistance = distance;
 	}
@@ -653,17 +772,58 @@ function fireShunt(car: Model, backward: boolean) {
 	missile.CanCollide = false;
 	missile.CanQuery = false;
 	missile.CanTouch = false;
+	missile.Shape = Enum.PartType.Ball;
 	missile.Material = Enum.Material.Neon;
 	missile.Color = POWERUP_INFO.shunt.color;
-	missile.Size = new Vector3(1.2, 1.2, 4.5);
+	missile.Size = SHUNT_VISUAL_SIZE;
 	missile.CFrame = muzzle;
-	attachTrail(missile, POWERUP_INFO.shunt.color, 1.2);
+	attachTrail(missile, POWERUP_INFO.shunt.color, SHUNT_TRAIL_WIDTH);
 	const light = new Instance("PointLight");
 	light.Color = POWERUP_INFO.shunt.color;
 	light.Brightness = 3;
-	light.Range = 16;
+	light.Range = 20;
 	light.Parent = missile;
+
+	// The orb is the comet head; a short backward-emitting flame plume and the
+	// persistent Trail turn its ground-hugging movement into a readable streak
+	// without changing the thin collision sweep used for walls and cars.
+	const comet = new Instance("ParticleEmitter");
+	comet.Name = "CometTail";
+	comet.Texture = "rbxasset://textures/particles/fire_main.dds";
+	comet.Color = new ColorSequence(Color3.fromRGB(255, 235, 130), Color3.fromRGB(255, 90, 25));
+	comet.LightEmission = 1;
+	comet.Rate = 55;
+	comet.Lifetime = new NumberRange(0.22, 0.42);
+	comet.Speed = new NumberRange(9, 18);
+	comet.Drag = 3;
+	comet.SpreadAngle = new Vector2(14, 14);
+	comet.EmissionDirection = Enum.NormalId.Back;
+	comet.Size = new NumberSequence([
+		new NumberSequenceKeypoint(0, 2.2),
+		new NumberSequenceKeypoint(0.45, 1.3),
+		new NumberSequenceKeypoint(1, 0),
+	]);
+	comet.Parent = missile;
 	missile.Parent = fxFolder;
+	playSpatialSound(muzzle.Position, POWERUP_SOUND_IDS.shuntEnergy, 0.42, 1.08, 1.5);
+
+	// A moving fly-by belongs to the comet head, not the launch position. It is
+	// destroyed with the projectile, so a counter or successful dodge cuts the
+	// tail naturally instead of leaving a detached sound in the arena.
+	const flightSound = new Instance("Sound");
+	flightSound.Name = "CometFlight";
+	flightSound.SoundId = POWERUP_SOUND_IDS.shuntFlight;
+	flightSound.Volume = 0.32;
+	flightSound.PlaybackSpeed = 0.88;
+	flightSound.RollOffMinDistance = 14;
+	flightSound.RollOffMaxDistance = 150;
+	flightSound.Parent = missile;
+	flightSound.Play();
+
+	const target = findShuntTarget(car, muzzle.Position, muzzle.LookVector);
+	const targetOwner = target?.GetAttribute(OWNER_USER_ID_ATTR);
+	missile.SetAttribute(TARGET_OWNER_ATTR, typeIs(targetOwner, "number") ? targetOwner : 0);
+	missile.SetAttribute(GUIDANCE_ACTIVE_ATTR, false);
 
 	projectiles.push({
 		part: missile,
@@ -671,13 +831,16 @@ function fireShunt(car: Model, backward: boolean) {
 		firer: car,
 		expiresAt: os.clock() + SHUNT_LIFETIME,
 		kind: "shunt",
-		target: findShuntTarget(car, muzzle.Position, muzzle.LookVector),
+		target,
+		guidanceStartsAt: os.clock() + SHUNT_GUIDANCE_DELAY,
 		active: true,
 	});
 }
 
 function explodeShunt(position: Vector3, firer?: Model) {
 	explosionFx(position, POWERUP_INFO.shunt.color, SHUNT_BLAST_RADIUS);
+	playSpatialSound(position, POWERUP_SOUND_IDS.shuntEnergy, 0.78, 0.86, 2.4);
+	playSpatialSound(position, POWERUP_SOUND_IDS.debrisImpact, 0.28, 1.02, 2.2);
 	for (const car of getCars()) {
 		if (car === firer) continue; // your own missile can't blast you
 		const chassis = getChassis(car);
@@ -687,6 +850,7 @@ function explodeShunt(position: Vector3, firer?: Model) {
 		const flat = new Vector3(offset.X, 0, offset.Z);
 		const away = flat.Magnitude > 0.5 ? flat.Unit : new Vector3(0, 0, 1);
 		knockCar(
+			"shunt",
 			car,
 			away.mul(SHUNT_KNOCK).add(new Vector3(0, SHUNT_KNOCK * 0.55, 0)),
 			new Vector3(0, 3, 0),
@@ -718,6 +882,7 @@ function cancelShunt(projectile: Projectile, position = projectile.part.Position
 	// A smaller, cooler pop distinguishes a successful counter from the orange
 	// damaging blast without applying damage or knockback.
 	explosionFx(position, Color3.fromRGB(150, 220, 255), 5);
+	playSpatialSound(position, POWERUP_SOUND_IDS.boltElectric, 0.25, 1.35, 1.2);
 	projectile.part.Destroy();
 }
 
@@ -753,6 +918,23 @@ function shuntPathParams(firer: Model) {
 	return params;
 }
 
+function shuntTerrainBlocked(from: Vector3, to: Vector3) {
+	const params = new RaycastParams();
+	params.FilterType = Enum.RaycastFilterType.Include;
+	params.FilterDescendantsInstances = [Workspace.Terrain];
+	params.IgnoreWater = true;
+	const raisedFrom = from.add(new Vector3(0, 0.5, 0));
+	const raisedTo = to.add(new Vector3(0, 1.5, 0));
+	return Workspace.Raycast(raisedFrom, raisedTo.sub(raisedFrom), params) !== undefined;
+}
+
+function loseShuntLock(projectile: Projectile) {
+	projectile.target = undefined;
+	projectile.offAxisSince = undefined;
+	projectile.part.SetAttribute(TARGET_OWNER_ATTR, 0);
+	projectile.part.SetAttribute(GUIDANCE_ACTIVE_ATTR, false);
+}
+
 RunService.Heartbeat.Connect((dt) => {
 	const now = os.clock();
 	for (let i = projectiles.size() - 1; i >= 0; i--) {
@@ -760,7 +942,9 @@ RunService.Heartbeat.Connect((dt) => {
 		if (!projectile.active) continue;
 
 		if (now >= projectile.expiresAt || !projectile.part.IsDescendantOf(game)) {
-			finishProjectile(projectile, projectile.kind === "shunt" && projectile.part.IsDescendantOf(game));
+			// Running out the five-second lifetime is a miss, not an invisible
+			// final blast at an arbitrary point near the former target.
+			finishProjectile(projectile, false);
 			continue;
 		}
 
@@ -783,10 +967,18 @@ RunService.Heartbeat.Connect((dt) => {
 			}
 		}
 
-		// Homing: bend the velocity toward the target, capped by turn rate.
+		// Homing starts after a readable straight-flight beat. A committed cut
+		// beyond the missile's nose or solid terrain breaks the lock permanently;
+		// there is deliberately no reacquisition after the player earns a miss.
+		if (projectile.kind === "shunt" && projectile.target && !projectile.target.IsDescendantOf(game)) {
+			loseShuntLock(projectile);
+		}
 		if (projectile.kind === "shunt" && projectile.target && projectile.target.IsDescendantOf(game)) {
 			const targetChassis = getChassis(projectile.target);
-			if (targetChassis) {
+			if (!targetChassis) {
+				loseShuntLock(projectile);
+			} else if (now >= (projectile.guidanceStartsAt ?? 0)) {
+				projectile.part.SetAttribute(GUIDANCE_ACTIVE_ATTR, true);
 				const offset = targetChassis.Position.sub(projectile.part.Position);
 				const desired = new Vector3(offset.X, 0, offset.Z);
 				if (desired.Magnitude > 0.5) {
@@ -794,6 +986,15 @@ RunService.Heartbeat.Connect((dt) => {
 					const currentDir = flatVelocity.Magnitude > 0.01 ? flatVelocity.Unit : desired.Unit;
 					const desiredDir = desired.Unit;
 					const angle = math.acos(math.clamp(currentDir.Dot(desiredDir), -1, 1));
+					if (shuntTerrainBlocked(projectile.part.Position, targetChassis.Position)) {
+						loseShuntLock(projectile);
+					} else if (angle > SHUNT_BREAK_ANGLE) {
+						projectile.offAxisSince ??= now;
+						if (now - projectile.offAxisSince >= SHUNT_BREAK_HOLD) loseShuntLock(projectile);
+					} else {
+						projectile.offAxisSince = undefined;
+					}
+					if (!projectile.target) continue;
 					const maxStep = SHUNT_TURN_RATE * dt;
 					const t = angle > 1e-3 ? math.min(1, maxStep / angle) : 1;
 					const newDir = currentDir.Lerp(desiredDir, t).Unit;
@@ -853,6 +1054,7 @@ RunService.Heartbeat.Connect((dt) => {
 				if (struckCar) {
 					const dir = projectile.velocity.Unit;
 					knockCar(
+						"bolt",
 						struckCar,
 						dir.mul(BOLT_KNOCK).add(new Vector3(0, 9, 0)),
 						new Vector3(0, dir.X > 0 ? 1.5 : -1.5, 0),
@@ -861,6 +1063,7 @@ RunService.Heartbeat.Connect((dt) => {
 					);
 				}
 				explosionFx(hit.Position, POWERUP_INFO.bolt.color, 4);
+				playSpatialSound(hit.Position, POWERUP_SOUND_IDS.boltElectric, 0.48, 1.08, 1.3);
 			} else {
 				// Preserve the prior wall-impact blast semantics; unlike expiry and
 				// proximity hits, an immediate wall impact can catch the firer.
@@ -895,21 +1098,56 @@ function dropMine(car: Model, backward: boolean) {
 
 	const mine = new Instance("Part");
 	mine.Name = "Mine";
-	mine.Shape = Enum.PartType.Cylinder;
+	mine.Shape = Enum.PartType.Ball;
 	mine.Anchored = true;
 	mine.CanCollide = false;
 	mine.CanQuery = false;
 	mine.CanTouch = false;
-	mine.Material = Enum.Material.Metal;
-	mine.Color = Color3.fromRGB(40, 40, 40);
-	mine.Size = new Vector3(0.9, 4, 4);
-	mine.CFrame = new CFrame(dropAt.X, y + 0.45, dropAt.Z).mul(CFrame.Angles(0, 0, math.rad(90)));
+	mine.Material = Enum.Material.Neon;
+	mine.Color = Color3.fromRGB(255, 105, 25);
+	mine.Size = new Vector3(MINE_VISUAL_DIAMETER, MINE_VISUAL_DIAMETER, MINE_VISUAL_DIAMETER);
+	mine.Position = new Vector3(dropAt.X, y + MINE_HOVER_HEIGHT, dropAt.Z);
 	const light = new Instance("PointLight");
 	light.Color = POWERUP_INFO.mine.color;
 	light.Brightness = 4;
-	light.Range = 10;
+	light.Range = 18;
 	light.Parent = mine;
 	mine.Parent = fxFolder;
+
+	// A spherical halo reads cleanly on every slope. It pulses after arming,
+	// replacing the flat trigger disc that visibly intersected angled terrain.
+	const halo = new Instance("Part");
+	halo.Name = "ArmedAura";
+	halo.Shape = Enum.PartType.Ball;
+	halo.Anchored = true;
+	halo.CanCollide = false;
+	halo.CanQuery = false;
+	halo.CanTouch = false;
+	halo.CastShadow = false;
+	halo.Material = Enum.Material.Neon;
+	halo.Color = POWERUP_INFO.mine.color;
+	halo.Transparency = 1;
+	halo.Size = new Vector3(7.4, 7.4, 7.4);
+	halo.Position = mine.Position;
+	halo.Parent = mine;
+
+	const flame = new Instance("Fire");
+	flame.Color = Color3.fromRGB(255, 215, 70);
+	flame.SecondaryColor = Color3.fromRGB(255, 70, 20);
+	flame.Heat = 5;
+	flame.Size = 4.5;
+	flame.Parent = mine;
+
+	const beacon = new Instance("ParticleEmitter");
+	beacon.Texture = "rbxasset://textures/particles/sparkles_main.dds";
+	beacon.Color = new ColorSequence(POWERUP_INFO.mine.color);
+	beacon.LightEmission = 1;
+	beacon.Rate = 8;
+	beacon.Lifetime = new NumberRange(0.3, 0.6);
+	beacon.Speed = new NumberRange(3, 6);
+	beacon.SpreadAngle = new Vector2(18, 18);
+	beacon.Enabled = false;
+	beacon.Parent = mine;
 
 	const activeMine: ActiveMine = {
 		part: mine,
@@ -926,9 +1164,12 @@ function dropMine(car: Model, backward: boolean) {
 			if (now >= activeMine.diesAt) break;
 
 			// Blink faster once armed.
-			light.Enabled = now >= activeMine.armedAt ? math.floor(now * 4) % 2 === 0 : true;
+			const armed = now >= activeMine.armedAt;
+			light.Enabled = armed ? math.floor(now * 6) % 2 === 0 : true;
+			halo.Transparency = armed ? 0.52 + ((math.sin(now * 7) + 1) / 2) * 0.2 : 0.78;
+			beacon.Enabled = armed;
 
-			if (now >= activeMine.armedAt) {
+			if (armed) {
 				for (const target of getCars()) {
 					const targetChassis = getChassis(target);
 					if (!targetChassis) continue;
@@ -960,6 +1201,8 @@ function detonateMine(mine: ActiveMine) {
 	// the same simulation slice. The mine blast still affects every nearby car.
 	mine.active = false;
 	explosionFx(position, POWERUP_INFO.mine.color, 12);
+	playSpatialSound(position, POWERUP_SOUND_IDS.mineFire, 0.78, 1, 2.5);
+	playSpatialSound(position, POWERUP_SOUND_IDS.debrisImpact, 0.52, 0.86, 2.3);
 	for (const target of getCars()) {
 		const targetChassis = getChassis(target);
 		if (!targetChassis) continue;
@@ -968,6 +1211,7 @@ function detonateMine(mine: ActiveMine) {
 		const flat = new Vector3(offset.X, 0, offset.Z);
 		const away = flat.Magnitude > 0.5 ? flat.Unit : targetChassis.CFrame.LookVector;
 		knockCar(
+			"mine",
 			target,
 			away.mul(MINE_KNOCK_AWAY).add(new Vector3(0, MINE_KNOCK_UP, 0)),
 			new Vector3(0, 4, 0),
@@ -1009,6 +1253,17 @@ function activateShield(car: Model) {
 	weld.Part1 = bubble;
 	weld.Parent = bubble;
 
+	const shieldSound = new Instance("Sound");
+	shieldSound.Name = "ShieldHum";
+	shieldSound.SoundId = POWERUP_SOUND_IDS.shieldLoop;
+	shieldSound.Volume = 0.16;
+	shieldSound.PlaybackSpeed = 1.05;
+	shieldSound.Looped = true;
+	shieldSound.RollOffMinDistance = 8;
+	shieldSound.RollOffMaxDistance = 75;
+	shieldSound.Parent = bubble;
+	shieldSound.Play();
+
 	task.delay(SHIELD_DURATION, () => {
 		if (bubble.IsDescendantOf(game)) bubble.Destroy();
 	});
@@ -1049,6 +1304,7 @@ function activateNitro(car: Model) {
 function activateBarge(car: Model) {
 	const chassis = getChassis(car);
 	if (!chassis) return;
+	playSpatialSound(chassis.Position, POWERUP_SOUND_IDS.bargeShockwave, 0.72, 0.94, 3.5);
 
 	// Expanding shockwave ring.
 	const ring = new Instance("Part");
@@ -1059,15 +1315,28 @@ function activateBarge(car: Model) {
 	ring.CanTouch = false;
 	ring.Material = Enum.Material.Neon;
 	ring.Color = POWERUP_INFO.barge.color;
-	ring.Transparency = 0.3;
-	ring.Size = new Vector3(0.6, 4, 4);
+	ring.Transparency = 0.42;
+	ring.Size = new Vector3(1.4, 6, 6);
 	ring.CFrame = new CFrame(chassis.Position).mul(CFrame.Angles(0, 0, math.rad(90)));
 	ring.Parent = fxFolder;
-	TweenService.Create(ring, new TweenInfo(0.4, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
-		Size: new Vector3(0.6, BARGE_RADIUS * 2, BARGE_RADIUS * 2),
+
+	const dust = new Instance("ParticleEmitter");
+	dust.Texture = "rbxasset://textures/particles/smoke_main.dds";
+	dust.Color = new ColorSequence(Color3.fromRGB(174, 132, 82));
+	dust.Transparency = new NumberSequence(0.25, 1);
+	dust.Lifetime = new NumberRange(0.35, 0.65);
+	dust.Speed = new NumberRange(22, 42);
+	dust.Drag = 8;
+	dust.SpreadAngle = new Vector2(180, 18);
+	dust.Size = new NumberSequence(2.5, 6);
+	dust.Parent = ring;
+	dust.Emit(32);
+
+	TweenService.Create(ring, new TweenInfo(0.52, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+		Size: new Vector3(1.4, BARGE_RADIUS * 2, BARGE_RADIUS * 2),
 		Transparency: 1,
 	}).Play();
-	task.delay(0.45, () => ring.Destroy());
+	task.delay(0.7, () => ring.Destroy());
 
 	// Barge is an indiscriminate projectile counter: ownership is deliberately
 	// ignored, matching the visible shockwave rather than car damage rules.
@@ -1089,6 +1358,7 @@ function activateBarge(car: Model) {
 		// Flash each car the wave reaches so hits read from the driver's seat.
 		explosionFx(targetChassis.Position, POWERUP_INFO.barge.color, 6);
 		knockCar(
+			"barge",
 			target,
 			away.mul(BARGE_KNOCK * falloff).add(new Vector3(0, 16, 0)),
 			new Vector3(0, 2, 0),

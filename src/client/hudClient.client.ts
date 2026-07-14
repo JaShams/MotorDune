@@ -1,4 +1,4 @@
-import { Players, RunService, TweenService, Workspace } from "@rbxts/services";
+import { Players, RunService, SoundService, TweenService, Workspace } from "@rbxts/services";
 import { CHASSIS_NAME } from "shared/carConfig";
 import {
 	BOT_LABEL_ATTR,
@@ -9,7 +9,7 @@ import {
 	MAX_HEALTH,
 	POINTS_NAME,
 } from "shared/healthConfig";
-import { FX_FOLDER } from "shared/powerupConfig";
+import { FX_FOLDER, GUIDANCE_ACTIVE_ATTR, POWERUP_SOUND_IDS, TARGET_OWNER_ATTR } from "shared/powerupConfig";
 import { CONTROLLER_BINDINGS } from "shared/inputConfig";
 import { controllerButtonLabel, getInputScheme } from "./controlInput";
 import { waitForLocalCar } from "./localCar";
@@ -256,13 +256,13 @@ rebuildBoard();
 // ---------------------------------------------------------------------------
 const CAR_BEHIND_RANGE = 70;
 const CAR_BEHIND_DOT = 0.42; // ~65 degree rear cone
-const MISSILE_RANGE = 140;
-const MISSILE_AIM_DOT = 0.86; // projectile look vector must point at us
+const MISSILE_RANGE = 240;
 
 const INCOMING_COLOR = Color3.fromRGB(255, 160, 40);
 const BEHIND_COLOR = new Color3(1, 1, 1);
 
 const threatPill = new Instance("Frame");
+threatPill.Name = "ThreatPill";
 threatPill.AnchorPoint = new Vector2(0.5, 1);
 threatPill.Position = new UDim2(0.5, 0, 0.96, -126);
 threatPill.Size = UDim2.fromOffset(150, 24);
@@ -280,6 +280,7 @@ pillStroke.Thickness = 2;
 pillStroke.Parent = threatPill;
 
 const pillText = new Instance("TextLabel");
+pillText.Name = "ThreatText";
 pillText.BackgroundTransparency = 1;
 pillText.Size = UDim2.fromScale(1, 1);
 pillText.Font = Enum.Font.GothamBold;
@@ -288,22 +289,17 @@ pillText.Parent = threatPill;
 
 const fxFolder = Workspace.WaitForChild(FX_FOLDER);
 
-function isProjectileName(name: string) {
-	return name === "Shunt" || name === "Bolt";
-}
-
-// A projectile counts as incoming when it's close and its flight direction
-// (the server keeps projectile CFrames looking along their velocity) points
-// at us. Our own shots leave the muzzle facing away, so they never match.
+// Shunts replicate their authoritative target. Unlike the old look-vector
+// guess, this never warns the wrong driver and clears the instant terrain or
+// a committed dodge breaks guidance.
 function projectileIncoming(carPos: Vector3) {
 	for (const child of fxFolder.GetChildren()) {
-		if (!child.IsA("BasePart") || !isProjectileName(child.Name)) continue;
-		const toUs = carPos.sub(child.Position);
-		const distance = toUs.Magnitude;
-		if (distance > MISSILE_RANGE || distance < 1) continue;
-		if (toUs.Unit.Dot(child.CFrame.LookVector) > MISSILE_AIM_DOT) return true;
+		if (!child.IsA("BasePart") || child.Name !== "Shunt") continue;
+		if (child.GetAttribute(TARGET_OWNER_ATTR) !== localPlayer.UserId) continue;
+		const distance = carPos.sub(child.Position).Magnitude;
+		if (distance <= MISSILE_RANGE) return { projectile: child, distance };
 	}
-	return false;
+	return undefined;
 }
 
 function carBehind(carPos: Vector3, heading: Vector3) {
@@ -320,6 +316,11 @@ function carBehind(carPos: Vector3, heading: Vector3) {
 }
 
 let lastThreatHeading = chassis.CFrame.LookVector;
+let lastWarningBeep = -math.huge;
+const warningSound = new Instance("Sound");
+warningSound.SoundId = POWERUP_SOUND_IDS.warning;
+warningSound.Volume = 0.42;
+warningSound.Parent = SoundService;
 
 RunService.RenderStepped.Connect(() => {
 	if (!isDriving()) {
@@ -333,17 +334,30 @@ RunService.RenderStepped.Connect(() => {
 	lastThreatHeading = heading;
 	const carPos = chassis.Position;
 
-	if (projectileIncoming(carPos)) {
+	const incoming = projectileIncoming(carPos);
+	if (incoming) {
 		// Flash so it reads as danger even in peripheral vision.
-		const pulse = (math.sin(os.clock() * 12) + 1) / 2;
+		const urgency = 1 - math.clamp(incoming.distance / MISSILE_RANGE, 0, 1);
+		const now = os.clock();
+		const pulse = (math.sin(now * (8 + urgency * 12)) + 1) / 2;
+		const localMissile = chassis.CFrame.PointToObjectSpace(incoming.projectile.Position);
+		const direction = localMissile.X > 8 ? "▶" : localMissile.X < -8 ? "◀" : "▼";
+		const guidanceActive = incoming.projectile.GetAttribute(GUIDANCE_ACTIVE_ATTR) === true;
 		threatPill.Visible = true;
 		const lookBackControl =
 			getInputScheme() === "gamepad" ? controllerButtonLabel(CONTROLLER_BINDINGS.lookBack) : "C";
-		pillText.Text = `🚀 INCOMING — ${lookBackControl} to look back`;
+		pillText.Text = `${direction} ${guidanceActive ? "INCOMING" : "LOCKING"} — ${lookBackControl} LOOK BACK`;
 		pillText.TextColor3 = INCOMING_COLOR;
 		pillStroke.Color = INCOMING_COLOR;
 		pillStroke.Transparency = pulse * 0.7;
-		threatPill.Size = UDim2.fromOffset(210, 24);
+		threatPill.Size = UDim2.fromOffset(228, 24);
+
+		const beepInterval = 0.7 - urgency * 0.54;
+		if (now - lastWarningBeep >= beepInterval) {
+			lastWarningBeep = now;
+			warningSound.PlaybackSpeed = 0.9 + urgency * 0.55;
+			warningSound.Play();
+		}
 	} else if (carBehind(carPos, heading)) {
 		threatPill.Visible = true;
 		pillText.Text = "▼ CAR BEHIND";
