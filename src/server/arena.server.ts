@@ -1,6 +1,7 @@
 import { Lighting, Workspace } from "@rbxts/services";
 import {
 	ARENA_NAME,
+	ARENA_BOUNDARY_RADIUS,
 	BOWL_RIM_HEIGHT,
 	BOWL_RIM_RADIUS,
 	CANYON_INNER_RADIUS,
@@ -60,6 +61,8 @@ interface PartOptions {
 	transparency?: number;
 	name?: string;
 	canCollide?: boolean;
+	canQuery?: boolean;
+	canTouch?: boolean;
 	castShadow?: boolean;
 }
 
@@ -68,6 +71,8 @@ function makePart(parent: Instance, opts: PartOptions) {
 	part.Name = opts.name ?? "ArenaPart";
 	part.Anchored = true;
 	part.CanCollide = opts.canCollide ?? true;
+	part.CanQuery = opts.canQuery ?? true;
+	part.CanTouch = opts.canTouch ?? true;
 	part.CastShadow = opts.castShadow ?? true;
 	part.Size = opts.size;
 	part.CFrame = opts.cframe;
@@ -305,83 +310,298 @@ function buildGround() {
 		}
 	}
 
-	// Collision-critical ground is complete before any car is allowed to spawn.
-	Workspace.SetAttribute("ArenaReady", true);
+	// ArenaReady is raised after the dedicated outer collision ring is built.
+	// Ground alone is no longer the complete containment surface.
 }
 
 // ===========================================================================
-// Raised dirt berm around the rim of the pit.
+// Layered outer boundary. Collision, the readable foreground edge, and the
+// skyline are deliberately separate systems: cars always meet one smooth
+// circular surface, while the visible canyon can use broken, overlapping
+// silhouettes without introducing seams, snag points, or accidental ramps.
 // ===========================================================================
-function buildBerm(arena: Model) {
-	// Raised dirt berm: a ring of tilted blocks hugging the rim.
-	const bermCount = math.floor((TWO_PI * (FLOOR_RADIUS + 6)) / 22);
-	for (let i = 0; i < bermCount; i++) {
-		const a = (i / bermCount) * TWO_PI;
-		const r = FLOOR_RADIUS + 6;
-		const pos = new Vector3(math.cos(a) * r, range(3, 6), math.sin(a) * r);
-		const cf = CFrame.lookAt(pos, new Vector3(0, pos.Y, 0)).mul(CFrame.Angles(math.rad(range(18, 30)), 0, 0));
+const BOUNDARY_SEGMENT_COUNT = 96;
+
+type CanyonTheme = "terraced" | "saddle" | "fractured" | "industrial" | "collapsed" | "hero";
+
+interface CanyonSector {
+	theme: CanyonTheme;
+	clusterCount: number;
+	minHeight: number;
+	maxHeight: number;
+	industrialFooting: boolean;
+}
+
+// Eight authored sectors make the ring navigable: high landmark faces are
+// separated by lower windows framing the refinery, windmill, pylons, and
+// water tower. Randomness only varies each theme within these fixed beats.
+const CANYON_SECTORS: ReadonlyArray<CanyonSector> = [
+	{ theme: "terraced", clusterCount: 6, minHeight: 105, maxHeight: 160, industrialFooting: true },
+	{ theme: "saddle", clusterCount: 5, minHeight: 58, maxHeight: 92, industrialFooting: true },
+	{ theme: "fractured", clusterCount: 6, minHeight: 88, maxHeight: 145, industrialFooting: false },
+	{ theme: "industrial", clusterCount: 6, minHeight: 74, maxHeight: 124, industrialFooting: true },
+	{ theme: "collapsed", clusterCount: 7, minHeight: 64, maxHeight: 116, industrialFooting: true },
+	{ theme: "saddle", clusterCount: 5, minHeight: 56, maxHeight: 96, industrialFooting: true },
+	{ theme: "hero", clusterCount: 6, minHeight: 128, maxHeight: 184, industrialFooting: true },
+	{ theme: "fractured", clusterCount: 5, minHeight: 62, maxHeight: 108, industrialFooting: false },
+];
+
+function buildBoundaryCollision(arena: Model) {
+	const spacing = (TWO_PI * ARENA_BOUNDARY_RADIUS) / BOUNDARY_SEGMENT_COUNT;
+	for (let i = 0; i < BOUNDARY_SEGMENT_COUNT; i++) {
+		const a = (i / BOUNDARY_SEGMENT_COUNT) * TWO_PI;
+		const ground = surfacePosition(a, ARENA_BOUNDARY_RADIUS);
+		const pos = ground.add(new Vector3(0, 24, 0));
 		makePart(arena, {
-			name: "Berm",
-			size: new Vector3(range(26, 34), range(8, 14), range(14, 22)),
-			cframe: cf,
-			color: i % 2 === 0 ? DIRT_DARK : DIRT,
-			material: Enum.Material.Ground,
+			name: "ArenaBoundary",
+			size: new Vector3(spacing + 4, 64, 10),
+			cframe: CFrame.lookAt(pos, new Vector3(0, pos.Y, 0)),
+			color: Color3.fromRGB(0, 0, 0),
+			material: Enum.Material.SmoothPlastic,
+			transparency: 1,
+			canTouch: false,
+			castShadow: false,
 		});
 	}
 }
 
-// ===========================================================================
-// Red canyon walls ringing the whole arena. Height varies, with occasional
-// low saddles so the distant mesas and refinery skyline show through, and a
-// pale sandstone cap band on each formation for that stratified-rock look.
-// ===========================================================================
-function buildCanyon(arena: Model) {
-	const formations = math.floor((TWO_PI * CANYON_INNER_RADIUS) / 34);
-	for (let i = 0; i < formations; i++) {
-		const a = (i / formations) * TWO_PI + range(-0.03, 0.03);
-		const r = CANYON_INNER_RADIUS + range(0, 70);
-		let height = range(60, 150);
-		if (i % 7 === 0) height *= 0.45; // saddle: a low pass revealing the horizon
-		// Canyon blocks are deliberately buried well below the sampled surface.
-		// Their slight random tilt otherwise lifts a lower corner and exposes a
-		// visible daylight seam between the wall and the outer terrain slope.
-		const pos = surfacePosition(a, r, height / 2 - 24);
-		const cf = CFrame.lookAt(pos, new Vector3(0, pos.Y, 0)).mul(
-			CFrame.Angles(range(-0.05, 0.05), 0, range(-0.08, 0.08)),
-		);
-		const w = range(70, 130);
-		const d = range(60, 110);
+function makeBoundaryRail(arena: Model, cf: CFrame, index: number) {
+	const railColor = index % 3 === 0 ? Color3.fromRGB(196, 158, 60) : RUST;
+	for (const x of [-15, 15]) {
 		makePart(arena, {
-			name: "Canyon",
-			size: new Vector3(w, height, d),
-			cframe: cf,
-			color: i % 3 === 0 ? ROCK_DARK : ROCK,
-			material: Enum.Material.Rock,
+			name: "BoundaryPost",
+			size: new Vector3(2.2, 11, 2.2),
+			cframe: cf.mul(new CFrame(x, 5.5, -1.9)),
+			color: METAL_DARK,
+			material: Enum.Material.CorrodedMetal,
+			canCollide: false,
+			canQuery: false,
+			canTouch: false,
+		});
+	}
+	for (const y of [4, 9]) {
+		makePart(arena, {
+			name: "BoundaryRail",
+			size: new Vector3(38, 2.2, 2.4),
+			cframe: cf.mul(new CFrame(0, y, -1.8)).mul(CFrame.Angles(0, 0, range(-0.025, 0.025))),
+			color: railColor,
+			material: Enum.Material.CorrodedMetal,
+			canCollide: false,
+			canQuery: false,
+			canTouch: false,
+		});
+	}
+}
+
+function makeBoundaryWreck(arena: Model, cf: CFrame) {
+	makePart(arena, {
+		name: "BoundaryWreck",
+		size: new Vector3(7, 2.8, 11),
+		cframe: cf.mul(new CFrame(0, 3, 3.5)).mul(CFrame.Angles(0, range(-0.35, 0.35), range(-0.14, 0.14))),
+		color: pick([RUST, Color3.fromRGB(88, 82, 76), Color3.fromRGB(70, 78, 88)]),
+		material: Enum.Material.CorrodedMetal,
+		canCollide: false,
+		canQuery: false,
+		canTouch: false,
+	});
+	for (const x of [-8, 8]) {
+		makeCylinder(arena, {
+			name: "BoundaryTire",
+			height: 1.6,
+			diameter: 4.6,
+			cframe: cf.mul(new CFrame(x, 2.3, -0.7)).mul(CFrame.Angles(range(-0.2, 0.2), 0, range(-0.2, 0.2))),
+			color: Color3.fromRGB(30, 30, 32),
+			material: Enum.Material.SmoothPlastic,
+			canCollide: false,
+			canQuery: false,
+			canTouch: false,
+		});
+	}
+}
+
+function buildBoundaryFooting(arena: Model) {
+	const perSector = BOUNDARY_SEGMENT_COUNT / CANYON_SECTORS.size();
+	for (let i = 0; i < BOUNDARY_SEGMENT_COUNT; i++) {
+		const a = (i / BOUNDARY_SEGMENT_COUNT) * TWO_PI;
+		const sector = CANYON_SECTORS[math.floor(i / perSector)];
+		const footingHeight = range(14, sector.theme === "hero" ? 25 : 21);
+		const footingDepth = range(20, 28);
+		const footingWidth = range(39, 47);
+		const pos = surfacePosition(a, ARENA_BOUNDARY_RADIUS, footingHeight / 2 - 3);
+		const cf = CFrame.lookAt(pos, new Vector3(0, pos.Y, 0));
+
+		// Put the visible inner face two studs behind the physical plane. That gap
+		// is filled by the cosmetic shell's small overhang beyond the chassis, so
+		// bodywork meets the rock instead of sinking halfway through it.
+		const footingOffset = footingDepth / 2 - 3;
+		makePart(arena, {
+			name: "BoundaryFooting",
+			size: new Vector3(footingWidth, footingHeight, footingDepth),
+			cframe: cf
+				.mul(new CFrame(0, 0, footingOffset))
+				.mul(CFrame.Angles(range(-0.035, 0.035), 0, range(-0.055, 0.055))),
+			color: i % 4 === 0 ? ROCK_DARK : i % 3 === 0 ? DIRT_DARK : ROCK,
+			material: i % 5 === 0 ? Enum.Material.Ground : Enum.Material.Rock,
+			canCollide: false,
+			canQuery: false,
+			canTouch: false,
 		});
 
-		// Lighter caprock band along the top of taller formations.
-		if (height > 70) {
+		// Occasional steel plates make the industrial arcs feel repaired rather
+		// than uniformly fenced. Their front face shares the shell-contact plane.
+		if (sector.industrialFooting && i % 4 === 1) {
 			makePart(arena, {
-				name: "CanyonCap",
-				size: new Vector3(w * 1.03, height * 0.14, d * 1.03),
-				cframe: cf.mul(new CFrame(0, height * 0.43, 0)),
-				color: ROCK_CAP,
-				material: Enum.Material.Rock,
+				name: "BoundaryPlate",
+				size: new Vector3(footingWidth * 0.78, footingHeight * 0.58, 1.2),
+				cframe: cf
+					.mul(new CFrame(0, 0, -2.4))
+					.mul(CFrame.Angles(0, 0, range(-0.018, 0.018))),
+				color: i % 8 === 1 ? RUST : METAL_DARK,
+				material: Enum.Material.CorrodedMetal,
 				canCollide: false,
+				canQuery: false,
+				canTouch: false,
 			});
 		}
 
-		// A few smaller boulders at the base for silhouette variety.
-		if (i % 2 === 0) {
-			const br = CANYON_INNER_RADIUS - range(6, 22);
-			const bpos = surfacePosition(a, br, range(4, 10));
-			makePart(arena, {
-				name: "Boulder",
-				size: new Vector3(range(18, 34), range(14, 26), range(18, 34)),
-				cframe: new CFrame(bpos).mul(CFrame.Angles(range(0, 1), range(0, 6), range(0, 1))),
-				color: ROCK_DARK,
-				material: Enum.Material.Rock,
-			});
+		if (sector.industrialFooting && i % 2 === 0) makeBoundaryRail(arena, cf, i);
+		if ((sector.theme === "collapsed" || sector.theme === "industrial") && i % 6 === 0) {
+			makeBoundaryWreck(arena, cf);
+		}
+	}
+}
+
+function makeCliffCluster(arena: Model, sector: CanyonSector, angle: number, clusterIndex: number) {
+	const height = range(sector.minHeight, sector.maxHeight);
+	const width = range(sector.theme === "fractured" ? 54 : 72, sector.theme === "hero" ? 138 : 116);
+	const depth = range(58, 104);
+	// Keep even the deepest, slightly tilted mass behind the readable boundary
+	// face. Previously a 100-stud-deep decorative block could begin near radius
+	// 530, letting a car visibly enter it before reaching the collider at 557.
+	const preferredRadius = CANYON_INNER_RADIUS + range(10, 64);
+	const radius = math.max(preferredRadius, ARENA_BOUNDARY_RADIUS + 5 + depth / 2);
+	const pos = surfacePosition(angle, radius, height / 2 - 18);
+	const cf = CFrame.lookAt(pos, new Vector3(0, pos.Y, 0)).mul(
+		CFrame.Angles(range(-0.045, 0.045), 0, range(-0.07, 0.07)),
+	);
+	const rockColor = clusterIndex % 3 === 0 ? ROCK_DARK : ROCK;
+	const visualOnly = { canCollide: false, canQuery: false, canTouch: false };
+
+	makePart(arena, {
+		name: "CanyonMass",
+		size: new Vector3(width, height, depth),
+		cframe: cf,
+		color: rockColor,
+		material: Enum.Material.Rock,
+		...visualOnly,
+	});
+
+	// Shorter side masses destroy the single-box silhouette and read as eroded
+	// buttresses. Collapsed sectors lean them farther and lower into talus.
+	for (const side of [-1, 1]) {
+		const buttressHeight = height * range(sector.theme === "collapsed" ? 0.35 : 0.48, 0.7);
+		const buttressDepth = depth * range(0.55, 0.82);
+		makePart(arena, {
+			name: "CanyonButtress",
+			size: new Vector3(width * range(0.22, 0.34), buttressHeight, buttressDepth),
+			cframe: cf
+				.mul(new CFrame(side * width * range(0.36, 0.48), -height * 0.18, range(0, 12)))
+				.mul(CFrame.Angles(0, 0, side * range(0.04, 0.13))),
+			color: side === 1 ? ROCK_DARK : rockColor,
+			material: Enum.Material.Rock,
+			...visualOnly,
+		});
+	}
+
+	// Narrow crowns break the last broad, flat top surfaces without restoring
+	// the old full-width cap bands. Saddles deliberately remain low and quiet.
+	const crownCount = sector.theme === "hero" || sector.theme === "terraced" ? 2 : sector.theme === "saddle" ? 0 : 1;
+	for (let crown = 0; crown < crownCount; crown++) {
+		const crownHeight = range(12, math.max(12, math.min(28, height * 0.2)));
+		makePart(arena, {
+			name: "CanyonCrown",
+			size: new Vector3(width * range(0.24, 0.46), crownHeight, depth * range(0.5, 0.72)),
+			cframe: cf
+				.mul(
+					new CFrame(
+						range(-width * 0.28, width * 0.28),
+						height / 2 + crownHeight / 2 - 5,
+						range(5, 14),
+					),
+				)
+				.mul(CFrame.Angles(range(-0.025, 0.025), 0, range(-0.045, 0.045))),
+			color: crown % 2 === 0 ? rockColor : ROCK_DARK,
+			material: Enum.Material.Rock,
+			...visualOnly,
+		});
+	}
+
+	// Partial, offset ledges replace the old full-width cap bands that exposed
+	// the rectangular construction. Hero and terraced faces receive a second
+	// ledge; saddles stay visually quiet so the horizon remains open.
+	const ledgeCount = sector.theme === "hero" || sector.theme === "terraced" ? 2 : sector.theme === "saddle" ? 0 : 1;
+	for (let ledge = 0; ledge < ledgeCount; ledge++) {
+		const ledgeWidth = width * range(0.38, 0.68);
+		makePart(arena, {
+			name: "CanyonLedge",
+			size: new Vector3(ledgeWidth, range(7, 13), depth * range(0.78, 1.02)),
+			cframe: cf.mul(
+				new CFrame(
+					range(-width * 0.18, width * 0.18),
+					height * (ledge === 0 ? 0.28 : 0.06),
+					range(-4, 5),
+				),
+			),
+			color: ROCK_CAP,
+			material: Enum.Material.Rock,
+			...visualOnly,
+		});
+	}
+
+	if (sector.theme === "fractured") {
+		const pillarHeight = height * range(0.72, 1.05);
+		makePart(arena, {
+			name: "CanyonPillar",
+			size: new Vector3(width * range(0.18, 0.28), pillarHeight, depth * range(0.42, 0.6)),
+			cframe: cf
+				.mul(new CFrame(range(-width * 0.55, width * 0.55), height * 0.06, range(-12, 8)))
+				.mul(CFrame.Angles(0, 0, range(-0.09, 0.09))),
+			color: ROCK_DARK,
+			material: Enum.Material.Rock,
+			...visualOnly,
+		});
+	}
+
+	for (const side of [-1, 1]) {
+		const boulderSize = range(18, 34);
+		const boulderHeight = boulderSize * range(0.55, 0.9);
+		const boulderDepth = boulderSize * range(0.8, 1.2);
+		// The full half-diagonal is conservative under the random rotations below
+		// and guarantees the talus never protrudes through the contact surface.
+		const radialHalf = math.sqrt(boulderSize * boulderSize + boulderHeight * boulderHeight + boulderDepth * boulderDepth) / 2;
+		const talusCentreRadius = ARENA_BOUNDARY_RADIUS + 1 + radialHalf;
+		const talusYOffset = boulderHeight / 2 + 16 - height / 2;
+		makePart(arena, {
+			name: "BoundaryTalus",
+			size: new Vector3(boulderSize, boulderHeight, boulderDepth),
+			cframe: cf
+				.mul(new CFrame(side * width * range(0.25, 0.48), talusYOffset, talusCentreRadius - radius))
+				.mul(CFrame.Angles(range(-0.35, 0.35), range(0, TWO_PI), range(-0.35, 0.35))),
+			color: side === 1 ? DIRT_DARK : ROCK_DARK,
+			material: Enum.Material.Rock,
+			...visualOnly,
+		});
+	}
+}
+
+function buildCanyon(arena: Model) {
+	const sectorAngle = TWO_PI / CANYON_SECTORS.size();
+	for (let sectorIndex = 0; sectorIndex < CANYON_SECTORS.size(); sectorIndex++) {
+		const sector = CANYON_SECTORS[sectorIndex];
+		for (let cluster = 0; cluster < sector.clusterCount; cluster++) {
+			const t = (cluster + 0.5) / sector.clusterCount;
+			const angle = sectorIndex * sectorAngle + t * sectorAngle + range(-0.035, 0.035);
+			makeCliffCluster(arena, sector, angle, cluster);
 		}
 	}
 }
@@ -760,27 +980,6 @@ function buildWindmill(arena: Model) {
 }
 
 // ===========================================================================
-// Inner retaining barrier — restyled as weathered wood plank walls with
-// occasional hazard-yellow metal segments (concept-image demolition look).
-// ===========================================================================
-function buildBarrier(arena: Model) {
-	const segments = math.floor((TWO_PI * (FLOOR_RADIUS - 3)) / 17);
-	for (let i = 0; i < segments; i++) {
-		const a = (i / segments) * TWO_PI;
-		const r = FLOOR_RADIUS - 3;
-		const pos = new Vector3(math.cos(a) * r, 3, math.sin(a) * r);
-		const hazard = i % 6 === 0;
-		makePart(arena, {
-			name: "Barrier",
-			size: new Vector3(20, 6, 3),
-			cframe: CFrame.lookAt(pos, new Vector3(0, pos.Y, 0)).mul(CFrame.Angles(0, 0, range(-0.02, 0.02))),
-			color: hazard ? Color3.fromRGB(196, 158, 60) : i % 2 === 0 ? WOOD : WOOD_DARK,
-			material: hazard ? Enum.Material.Metal : Enum.Material.WoodPlanks,
-		});
-	}
-}
-
-// ===========================================================================
 // Central derrick / tower (the red rig in the middle of the arena).
 // ===========================================================================
 function buildDerrick(arena: Model) {
@@ -1116,10 +1315,12 @@ function makeBillboard(arena: Model, angleDeg: number, text: string, accent: Col
 }
 
 function buildBillboards(arena: Model) {
-	makeBillboard(arena, 35, "FUEL UP. FIGHT. WIN.", Color3.fromRGB(255, 196, 60));
-	makeBillboard(arena, 125, "DEMOLITION DERBY", Color3.fromRGB(255, 96, 64));
-	makeBillboard(arena, 215, "NO RULES", Color3.fromRGB(255, 222, 120));
-	makeBillboard(arena, 305, "LAST CAR ROLLING", Color3.fromRGB(120, 220, 255));
+	// These angles sit on the four solid authored faces rather than across the
+	// refinery, pylon, and water-tower skyline windows.
+	makeBillboard(arena, 18, "FUEL UP. FIGHT. WIN.", Color3.fromRGB(255, 196, 60));
+	makeBillboard(arena, 112, "DEMOLITION DERBY", Color3.fromRGB(255, 96, 64));
+	makeBillboard(arena, 202, "NO RULES", Color3.fromRGB(255, 222, 120));
+	makeBillboard(arena, 292, "LAST CAR ROLLING", Color3.fromRGB(120, 220, 255));
 }
 
 // ===========================================================================
@@ -1410,6 +1611,11 @@ function buildArena() {
 
 	setupLighting();
 	buildGround();
+	buildBoundaryCollision(arena);
+	// Cars may spawn once both terrain and the simple containment surface are
+	// complete; all remaining builders are cosmetic or existing landmarks.
+	Workspace.SetAttribute("ArenaReady", true);
+	buildBoundaryFooting(arena);
 	buildCanyon(arena);
 	buildMesas(arena);
 	buildRefinery(arena);

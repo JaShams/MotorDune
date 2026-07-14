@@ -8,6 +8,9 @@ export const ARENA_NAME = "Arena";
 export const FLOOR_RADIUS = 515;
 export const FLOOR_THICKNESS = 8;
 export const CANYON_INNER_RADIUS = 570;
+// One authoritative containment radius lets the visible canyon be irregular
+// without turning its decorative slabs into unpredictable car colliders.
+export const ARENA_BOUNDARY_RADIUS = 562;
 
 export const TRACK_WIDTH = 31.5;
 export const TRACK_CENTER_RADIUS = 475;
