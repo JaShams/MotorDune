@@ -29,6 +29,9 @@ import { localDrive } from "./carState";
 
 const wheelspinExtraRate = 45; // rad/s of visual over-spin at full wheelspin
 const remoteSteerResponse = 8; // smoothing stand-in for the driver's input ramp
+const dustStartSpeed = 5; // no dust while idling, but ordinary driving leaves a readable trace
+const dustFullSpeed = 60;
+const dustMaxRate = 20; // particles/s per rear tyre, emitted as deterministic individual puffs
 
 interface CarVisual {
 	car: Model;
@@ -36,6 +39,8 @@ interface CarVisual {
 	seat: VehicleSeat;
 	wheels: BasePart[];
 	rims: BasePart[];
+	dust: Array<ParticleEmitter | undefined>;
+	dustAccumulator: number[];
 	rayParams: RaycastParams;
 	rollAngles: number[]; // forward-positive roll distance, radians
 	visualSteer: number;
@@ -62,6 +67,48 @@ function getOrCreateRim(car: Model, wheel: BasePart) {
 	rim.Material = Enum.Material.SmoothPlastic;
 	rim.Parent = car;
 	return rim;
+}
+
+// Local-only dust avoids replicating cosmetic state or asking the server to
+// track wheel contacts. The attachment is re-oriented to the terrain normal
+// each frame, so the plume rises away from slopes instead of through them.
+function getOrCreateDust(wheel: BasePart) {
+	const existingAttachment = wheel.FindFirstChild("DustAttachment");
+	const attachment = existingAttachment?.IsA("Attachment") ? existingAttachment : new Instance("Attachment");
+	attachment.Name = "DustAttachment";
+	attachment.Parent = wheel;
+
+	const existingDust = attachment.FindFirstChild("WheelDust");
+	if (existingDust?.IsA("ParticleEmitter")) return existingDust;
+
+	const dust = new Instance("ParticleEmitter");
+	dust.Name = "WheelDust";
+	dust.Texture = "rbxasset://textures/particles/smoke_main.dds";
+	dust.Enabled = false;
+	dust.Rate = 0;
+	dust.Lifetime = new NumberRange(0.75, 1.15);
+	dust.Speed = new NumberRange(2.5, 5);
+	dust.Drag = 2.5;
+	dust.EmissionDirection = Enum.NormalId.Top;
+	dust.SpreadAngle = new Vector2(40, 40);
+	dust.Acceleration = new Vector3(0, 4.5, 0);
+	dust.Rotation = new NumberRange(0, 360);
+	dust.RotSpeed = new NumberRange(-18, 18);
+	dust.Color = new ColorSequence(Color3.fromRGB(169, 129, 86), Color3.fromRGB(205, 167, 122));
+	dust.Size = new NumberSequence([
+		new NumberSequenceKeypoint(0, 1.4),
+		new NumberSequenceKeypoint(0.55, 3),
+		new NumberSequenceKeypoint(1, 4.8),
+	]);
+	dust.Transparency = new NumberSequence([
+		new NumberSequenceKeypoint(0, 0.38),
+		new NumberSequenceKeypoint(0.45, 0.66),
+		new NumberSequenceKeypoint(1, 1),
+	]);
+	dust.LightEmission = 0;
+	dust.LightInfluence = 1;
+	dust.Parent = attachment;
+	return dust;
 }
 
 // Adopt any car model that shows up in the workspace (the player's car and
@@ -97,6 +144,8 @@ function tryRegister(child: Instance) {
 			seat,
 			wheels,
 			rims: wheels.map((wheel) => getOrCreateRim(child, wheel)),
+			dust: wheels.map((wheel, index) => (index >= 2 ? getOrCreateDust(wheel) : undefined)),
+			dustAccumulator: [0, 0, 0, 0],
 			rayParams,
 			rollAngles: [0, 0, 0, 0],
 			visualSteer: 0,
@@ -147,7 +196,8 @@ RunService.RenderStepped.Connect((dt) => {
 				visual.rayParams,
 			);
 			let travel = SUSPENSION_LENGTH;
-			if (result && result.Normal.Dot(cf.UpVector) >= 0.2) {
+			const grounded = result !== undefined && result.Normal.Dot(cf.UpVector) >= 0.2;
+			if (grounded) {
 				travel = math.clamp(result.Distance - castLift, 0, SUSPENSION_LENGTH);
 			}
 			const center = origin.sub(cf.UpVector.mul(travel));
@@ -173,6 +223,33 @@ RunService.RenderStepped.Connect((dt) => {
 				.mul(CFrame.Angles(-visual.rollAngles[i], 0, 0));
 			visual.wheels[i].CFrame = wheelCFrame;
 			visual.rims[i].CFrame = wheelCFrame;
+
+			const dust = visual.dust[i];
+			if (dust) {
+				const velocity = chassis.AssemblyLinearVelocity;
+				const planarSpeed = velocity.sub(cf.UpVector.mul(velocity.Dot(cf.UpVector))).Magnitude;
+				const speedAlpha = math.clamp(
+					(planarSpeed - dustStartSpeed) / (dustFullSpeed - dustStartSpeed),
+					0,
+					1,
+				);
+				if (grounded) {
+					const attachment = dust.Parent as Attachment;
+					const contact = result.Position.add(result.Normal.mul(0.08));
+					attachment.WorldCFrame = CFrame.lookAt(contact, contact.add(orientation.LookVector), result.Normal);
+
+					// Explicit emissions are stable at low rates: the fractional budget
+					// survives between frames instead of producing long invisible gaps.
+					visual.dustAccumulator[i] += speedAlpha * dustMaxRate * dt;
+					const emitCount = math.floor(visual.dustAccumulator[i]);
+					if (emitCount > 0) {
+						dust.Emit(emitCount);
+						visual.dustAccumulator[i] -= emitCount;
+					}
+				} else {
+					visual.dustAccumulator[i] = 0;
+				}
+			}
 		}
 	}
 });

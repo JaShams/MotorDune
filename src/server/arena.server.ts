@@ -160,10 +160,10 @@ function setupLighting() {
 	Lighting.Brightness = 2.25;
 	Lighting.ExposureCompensation = 0.3;
 	Lighting.GlobalShadows = true;
-	// Warm ambient fakes the floodlight bounce filling the bowl (the concept's
-	// whole arena glows); shadows still cool off toward blue via Ambient.
-	Lighting.OutdoorAmbient = Color3.fromRGB(148, 132, 120);
-	Lighting.Ambient = Color3.fromRGB(96, 86, 88);
+	// Restrained warm fill keeps the bowl readable without flattening the pools
+	// of stadium light; shadows still cool off toward blue via Ambient.
+	Lighting.OutdoorAmbient = Color3.fromRGB(132, 117, 107);
+	Lighting.Ambient = Color3.fromRGB(84, 75, 77);
 	Lighting.EnvironmentDiffuseScale = 0.6;
 	Lighting.EnvironmentSpecularScale = 0.55;
 	Lighting.ShadowSoftness = 0.25;
@@ -1170,8 +1170,9 @@ function buildFloodlights(arena: Model) {
 		});
 
 		// Six glowing lamp lenses, each with a real spotlight — these towers
-		// are the arena's primary light source at night. Only one inner lamp per
-		// rack casts shadows (shadowed lights are expensive; 12 is plenty).
+		// are the arena's primary light source at night. The rack is farther than
+		// Roblox's 60-stud light range from the track, so shadow casting is handled
+		// by one beam-aligned proxy near the pool below.
 		for (const offset of [-15, -9, -3, 3, 9, 15]) {
 			const lensCf = headCf.mul(new CFrame(offset, 0, -1.2));
 			const lens = makePart(arena, {
@@ -1186,7 +1187,7 @@ function buildFloodlights(arena: Model) {
 			spot.Angle = 78;
 			spot.Range = 60; // engine clamps Light.Range to 60 — the pool light below covers the rest
 			spot.Brightness = 7;
-			spot.Shadows = offset === -3;
+			spot.Shadows = false;
 			spot.Color = Color3.fromRGB(255, 236, 198);
 			spot.Parent = lens;
 		}
@@ -1210,15 +1211,34 @@ function buildFloodlights(arena: Model) {
 			castShadow: false,
 		});
 
-		// 60 studs of range, so the spotlight cone alone never reaches the dirt.
-		// The lamp head sits well beyond its ground pool but lights clamp at 60
-		// studs of range, so the spotlight cone alone never reaches the dirt.
-		// 60 studs of range, so the spotlight cone alone never reaches the dirt.
-		// Roblox clamps every light to 60 studs, so three lower-intensity point
-		// lights are spread tangentially across the track. Their overlap produces
-		// one wide, soft pool without an overexposed hot spot in the centre.
+		// Put one invisible spotlight 42 studs back up the real rack-to-pool beam.
+		// It is close enough to reach the track, and its direction makes car shadows
+		// point away from the visible tower instead of straight down. Keeping one
+		// shadowed proxy per rack preserves the old 12-light shadow budget.
+		const shadowProxyPos = aimPoint.add(headPos.sub(aimPoint).Unit.mul(42));
+		const shadowProxy = makePart(arena, {
+			name: "FloodShadowProxy",
+			size: new Vector3(1, 1, 1),
+			cframe: CFrame.lookAt(shadowProxyPos, aimPoint),
+			color: Color3.fromRGB(255, 232, 190),
+			material: Enum.Material.Neon,
+			transparency: 1,
+			canCollide: false,
+			castShadow: false,
+		});
+		const shadowPool = new Instance("SpotLight");
+		shadowPool.Face = Enum.NormalId.Front;
+		shadowPool.Angle = 105;
+		shadowPool.Range = 60;
+		shadowPool.Brightness = 4.5;
+		shadowPool.Shadows = true;
+		shadowPool.Color = Color3.fromRGB(255, 232, 190);
+		shadowPool.Parent = shadowProxy;
+
+		// Two unshadowed point lights extend the soft pool tangentially beyond the
+		// proxy's range-limited footprint without washing out its central shadow.
 		const tangent = new Vector3(-math.sin(a), 0, math.cos(a));
-		for (const poolOffset of [-58, 0, 58]) {
+		for (const poolOffset of [-58, 58]) {
 			const poolHost = makePart(arena, {
 				name: "FloodPool",
 				size: new Vector3(1, 1, 1),
@@ -1231,7 +1251,7 @@ function buildFloodlights(arena: Model) {
 			});
 			const pool = new Instance("PointLight");
 			pool.Color = Color3.fromRGB(255, 232, 190);
-			pool.Brightness = poolOffset === 0 ? 4.5 : 3.5;
+			pool.Brightness = 3.5;
 			pool.Range = 60;
 			pool.Parent = poolHost;
 		}
