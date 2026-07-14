@@ -97,6 +97,9 @@ function getOrCreateChassis(car: Model, spawnCFrame: CFrame, color: Color3) {
 	chassis.Massless = false;
 	chassis.Color = color;
 	chassis.Material = Enum.Material.Metal;
+	// Normalise adopted chassis too: the transparent collider still supplies a
+	// useful fallback shadow if the cosmetic shell is absent or incomplete.
+	chassis.CastShadow = true;
 	chassis.Size = CHASSIS_SIZE;
 	chassis.CFrame = spawnCFrame;
 	chassis.AssemblyLinearVelocity = Vector3.zero;
@@ -162,11 +165,16 @@ function getOrCreateBodyShell(car: Model, chassis: BasePart, template: Model, co
 		}
 	}
 
-	// Paint the tagged hull panels (adopted shells get repainted too, so a bot
-	// colour change in code shows up without deleting the saved car).
+	// Normalise shadow casting on both cloned and adopted shell parts. Templates
+	// are Studio-authored assets, so this must not depend on their saved flags.
+	// Paint tagged hull panels in the same pass so bot colour changes also show
+	// up without deleting a saved car.
 	for (const part of shell.GetDescendants()) {
-		if (part.IsA("BasePart") && CollectionService.HasTag(part, "BodyPanel")) {
-			part.Color = color;
+		if (part.IsA("BasePart")) {
+			part.CastShadow = true;
+			if (CollectionService.HasTag(part, "BodyPanel")) {
+				part.Color = color;
+			}
 		}
 	}
 
@@ -192,6 +200,7 @@ function getOrCreateWheel(car: Model, chassis: BasePart, name: string, offset: V
 	wheel.CFrame = chassis.CFrame.mul(new CFrame(offset));
 	wheel.Color = new Color3(0.05, 0.05, 0.05);
 	wheel.Material = Enum.Material.Rubber;
+	wheel.CastShadow = true;
 	wheel.Parent = car;
 
 	// Clean up welds left in the place file by the previous rigid-wheel setup.

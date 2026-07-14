@@ -153,10 +153,13 @@ const SCRUB_COLORS: ReadonlyArray<Color3> = [
 // the place file via Studio).
 // ===========================================================================
 function setupLighting() {
-	Lighting.ClockTime = 17.95; // sun dipping behind the crater rim — dusk band in the sky, no blown-out disk
+	// Keep the low sunset angle, but leave enough sun above the crater rim for
+	// cars and arena dressing to cast readable native shadows.
+	Lighting.ClockTime = 17.4;
 	Lighting.GeographicLatitude = 18;
 	Lighting.Brightness = 2.25;
 	Lighting.ExposureCompensation = 0.3;
+	Lighting.GlobalShadows = true;
 	// Warm ambient fakes the floodlight bounce filling the bowl (the concept's
 	// whole arena glows); shadows still cool off toward blue via Ambient.
 	Lighting.OutdoorAmbient = Color3.fromRGB(148, 132, 120);
