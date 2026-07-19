@@ -1261,9 +1261,30 @@ function dropMine(car: Model, backward: boolean) {
 	mine.CanQuery = false;
 	mine.CanTouch = false;
 	mine.Material = Enum.Material.Neon;
-	mine.Color = Color3.fromRGB(255, 105, 25);
+	mine.Color = Color3.fromRGB(255, 100, 0);
 	mine.Size = new Vector3(MINE_VISUAL_DIAMETER, MINE_VISUAL_DIAMETER, MINE_VISUAL_DIAMETER);
 	mine.Position = new Vector3(dropAt.X, y + MINE_HOVER_HEIGHT, dropAt.Z);
+
+	const smoke = new Instance("ParticleEmitter");
+	smoke.Name = "DangerSmoke";
+	smoke.Texture = "rbxasset://textures/particles/smoke_main.dds";
+	smoke.Color = new ColorSequence(Color3.fromRGB(40, 40, 40));
+	smoke.Transparency = new NumberSequence([
+		new NumberSequenceKeypoint(0, 0.25),
+		new NumberSequenceKeypoint(1, 1),
+	]);
+	smoke.Size = new NumberSequence([
+		new NumberSequenceKeypoint(0, 1.2),
+		new NumberSequenceKeypoint(1, 4.5),
+	]);
+	smoke.Lifetime = new NumberRange(0.8, 1.4);
+	smoke.Rate = 22;
+	smoke.Speed = new NumberRange(4, 9);
+	smoke.SpreadAngle = new Vector2(25, 25);
+	smoke.EmissionDirection = Enum.NormalId.Top;
+	smoke.Enabled = true;
+	smoke.Parent = mine;
+
 	const light = new Instance("PointLight");
 	light.Color = POWERUP_INFO.mine.color;
 	light.Brightness = 4;
