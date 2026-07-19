@@ -43,10 +43,12 @@ import {
 	SHIELD_UNTIL_ATTR,
 	SLOT_ATTRS,
 	TARGET_OWNER_ATTR,
+	TICKER_REMOTE,
 	USE_REMOTE,
 } from "shared/powerupConfig";
 import { MATCH_PHASE_ATTR, OWNER_USER_ID_ATTR, ROUND_ELIMINATED_ATTR } from "shared/sessionConfig";
 import {
+	BOT_LABEL_ATTR,
 	BOT_POINTS_ATTR,
 	HEALTH_ATTR,
 	LEADERSTATS_NAME,
@@ -172,6 +174,9 @@ knockRemote.Parent = remotes;
 const feedbackRemote = new Instance("RemoteEvent");
 feedbackRemote.Name = FEEDBACK_REMOTE;
 feedbackRemote.Parent = remotes;
+const tickerRemote = new Instance("RemoteEvent");
+tickerRemote.Name = TICKER_REMOTE;
+tickerRemote.Parent = remotes;
 remotes.Parent = ReplicatedStorage;
 
 const fxFolder = new Instance("Folder");
@@ -279,6 +284,12 @@ function playSpatialSound(position: Vector3, soundId: string, volume: number, pl
 }
 
 // --- Health --------------------------------------------------------------------
+function getCarName(carModel: Model): string {
+	const player = getCarPlayer(carModel);
+	if (player) return player.DisplayName;
+	return (carModel.GetAttribute(BOT_LABEL_ATTR) as string | undefined) ?? carModel.Name;
+}
+
 function wreckCar(car: Model, attacker?: Model) {
 	const chassis = getChassis(car);
 	if (chassis) {
@@ -286,6 +297,11 @@ function wreckCar(car: Model, attacker?: Model) {
 		playSpatialSound(chassis.Position, POWERUP_SOUND_IDS.debrisImpact, 0.9, 0.88, 2.5);
 		applyKnock(car, new Vector3(0, 55, 0), new Vector3(2.5, 6, 2.5));
 	}
+
+	const victimName = getCarName(car);
+	const attackerName = attacker ? getCarName(attacker) : undefined;
+	const message = attackerName !== undefined ? `${attackerName} WRECKED ${victimName}!` : `${victimName} WRECKED!`;
+	tickerRemote.FireAllClients(message);
 
 	// A wreck dumps the car's held powerups.
 	for (const attr of SLOT_ATTRS) car.SetAttribute(attr, "");

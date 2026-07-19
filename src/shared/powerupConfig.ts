@@ -96,6 +96,7 @@ export const USE_REMOTE = "UsePowerup"; // client -> server: (slotIndex: 1..3, b
 export const BOT_USE_EVENT = "BotUsePowerup";
 export const KNOCK_REMOTE = "Knock"; // server -> driving client: (chassis, deltaV, angularDeltaV)
 export const FEEDBACK_REMOTE = "PowerupFeedback";
+export const TICKER_REMOTE = "GlobalTicker";
 export const PICKUPS_FOLDER = "Pickups"; // Workspace folder holding pickup pads
 export const FX_FOLDER = "PowerupFx"; // Workspace folder for projectiles/explosions
 
