@@ -1,5 +1,5 @@
 import { Players, ReplicatedStorage, RunService, ServerStorage, TweenService, Workspace } from "@rbxts/services";
-import { groundYAt, TRACK_CENTER_RADIUS } from "shared/arenaConfig";
+import { ARENA_NAME, groundYAt, TRACK_CENTER_RADIUS } from "shared/arenaConfig";
 import { CHASSIS_NAME, SEAT_NAME } from "shared/carConfig";
 import {
 	BARGE_RADIUS,
@@ -1030,29 +1030,76 @@ function segmentDistance(point: Vector3, start: Vector3, step: Vector3) {
 	return point.sub(start.add(step.mul(t))).Magnitude;
 }
 
+function getProjectileInclusionList(firer: Model): Instance[] {
+	const list: Instance[] = [];
+	for (const car of getCars()) {
+		if (car !== firer) {
+			list.push(car);
+		}
+	}
+	const arena = Workspace.FindFirstChild(ARENA_NAME);
+	if (arena) {
+		for (const child of arena.GetDescendants()) {
+			if (child.Name === "ArenaBoundary") {
+				list.push(child);
+			}
+		}
+	}
+	return list;
+}
+
 function sampleShuntGround(x: number, z: number, referenceY: number) {
-	const fallbackY = groundYAt(x, z);
 	const params = new RaycastParams();
 	params.FilterType = Enum.RaycastFilterType.Include;
 	params.FilterDescendantsInstances = [Workspace.Terrain];
 	params.IgnoreWater = true;
-	// Start the raycast origin higher to guarantee it starts above voxel corners and slopes.
-	const rayTop = math.max(referenceY, fallbackY) + 120;
-	const hit = Workspace.Raycast(new Vector3(x, rayTop, z), new Vector3(0, -250, 0), params);
-	if (hit) return { y: hit.Position.Y, normal: hit.Normal };
 
-	// Terrain can briefly be unavailable during streaming/build transitions.
-	// Derive a stable slope normal from the same deterministic height function
-	// used to build the arena rather than letting the missile fly vertically.
-	const sample = 2;
-	const dx = groundYAt(x + sample, z) - groundYAt(x - sample, z);
-	const dz = groundYAt(x, z + sample) - groundYAt(x, z - sample);
-	return { y: fallbackY, normal: new Vector3(-dx, sample * 2, -dz).Unit };
+	const sampleOffset = 6;
+	const offsets = [
+		new Vector2(0, 0),
+		new Vector2(sampleOffset, 0),
+		new Vector2(-sampleOffset, 0),
+		new Vector2(0, sampleOffset),
+		new Vector2(0, -sampleOffset),
+	];
+
+	let totalY = 0;
+	let totalNormal = Vector3.zero;
+	let validSamples = 0;
+
+	for (const offset of offsets) {
+		const sx = x + offset.X;
+		const sz = z + offset.Y;
+		const fallbackY = groundYAt(sx, sz);
+		const rayTop = math.max(referenceY, fallbackY) + 120;
+		const hit = Workspace.Raycast(new Vector3(sx, rayTop, sz), new Vector3(0, -250, 0), params);
+
+		if (hit) {
+			totalY += hit.Position.Y;
+			totalNormal = totalNormal.add(hit.Normal);
+			validSamples++;
+		} else {
+			// Fall back to analytic height and slope normal
+			totalY += fallbackY;
+			const sample = 2;
+			const dx = groundYAt(sx + sample, sz) - groundYAt(sx - sample, sz);
+			const dz = groundYAt(sx, sz + sample) - groundYAt(sx, sz - sample);
+			const norm = new Vector3(-dx, sample * 2, -dz).Unit;
+			totalNormal = totalNormal.add(norm);
+			validSamples++;
+		}
+	}
+
+	const avgY = totalY / validSamples;
+	const avgNormal = totalNormal.Unit;
+	return { y: avgY, normal: avgNormal };
 }
 
 function shuntPathParams(firer: Model) {
-	const params = projectileRayParams(firer);
-	params.FilterDescendantsInstances = [firer, fxFolder, pickupsFolder, Workspace.Terrain];
+	const params = new RaycastParams();
+	params.FilterType = Enum.RaycastFilterType.Include;
+	params.FilterDescendantsInstances = getProjectileInclusionList(firer);
+	params.IgnoreWater = true;
 	return params;
 }
 
