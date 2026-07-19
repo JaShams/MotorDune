@@ -43,3 +43,10 @@ export const WHEELBASE = WHEEL_OFFSETS[2].Z - WHEEL_OFFSETS[0].Z;
 // chassis). The server creates them; the client drives them every physics step.
 export const wheelForceName = (wheelName: string) => `${wheelName}Force`;
 export const wheelForceAttachmentName = (wheelName: string) => `${wheelName}ForceAtt`;
+
+// Arcade drift settings
+export const DRIFT_GRIP_FACTOR = 4.5;
+export const DRIFT_MIN_DURATION_BOOST = 1.5;
+export const DRIFT_BOOST_DURATION = 1.0;
+export const DRIFT_BOOST_MULTIPLIER = 1.5;
+

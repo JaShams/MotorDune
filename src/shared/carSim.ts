@@ -9,6 +9,10 @@ import {
 	WHEEL_RADIUS,
 	wheelForceAttachmentName,
 	wheelForceName,
+	DRIFT_GRIP_FACTOR,
+	DRIFT_MIN_DURATION_BOOST,
+	DRIFT_BOOST_DURATION,
+	DRIFT_BOOST_MULTIPLIER,
 } from "./carConfig";
 import { NITRO_BOOST_ACCEL, NITRO_SPEED_MULT, NITRO_UNTIL_ATTR } from "./powerupConfig";
 
@@ -239,6 +243,10 @@ export function createCarSim(car: Model, chassis: BasePart): CarSim {
 
 	let smoothedThrottle = 0;
 	let smoothedSteer = 0;
+	let isDrifting = false;
+	let driftDirection = 0; // 1 = left, -1 = right
+	let driftDuration = 0;
+	let boostUntil = 0;
 
 	// Built without `step`, which is attached below: Luau locals don't hoist
 	// the way TS function declarations do, so referencing the function inside
@@ -274,6 +282,39 @@ export function createCarSim(car: Model, chassis: BasePart): CarSim {
 		const forwardSpeed = velocity.Dot(cf.LookVector);
 		const speed = velocity.Magnitude;
 
+		// --- Dynamic Drift State Activation/Deactivation -----------------------
+		if (isDrifting) {
+			if (!handbrakeDown || speed < 5) {
+				isDrifting = false;
+				
+				// Award speed boost if drift lasted longer than threshold
+				if (driftDuration >= DRIFT_MIN_DURATION_BOOST) {
+					boostUntil = Workspace.GetServerTimeNow() + DRIFT_BOOST_DURATION;
+				}
+				
+				driftDuration = 0;
+				driftDirection = 0;
+			} else {
+				driftDuration += dt;
+			}
+		} else {
+			if (handbrakeDown && math.abs(input.steer) > 0.1 && speed > 10) {
+				isDrifting = true;
+				driftDirection = math.sign(input.steer); // 1 = left, -1 = right
+				driftDuration = 0;
+				
+				// Outward visual hop: brief upward/outward impulse
+				const hopDir = Vector3.yAxis.mul(12).add(cf.RightVector.mul(driftDirection * 8));
+				chassis.AssemblyLinearVelocity = chassis.AssemblyLinearVelocity.add(hopDir);
+			}
+		}
+
+		const boostActive = Workspace.GetServerTimeNow() < boostUntil;
+		if (boostActive) {
+			const boostForce = cf.LookVector.mul(driveAcceleration * DRIFT_BOOST_MULTIPLIER * mass * dt);
+			chassis.ApplyImpulse(boostForce);
+		}
+
 		// Steering input ramp: turn-in slows with speed, centring/counter-steer
 		// (target at zero or across it) does not.
 		const steerTarget = math.clamp(input.steer, -1, 1);
@@ -286,7 +327,7 @@ export function createCarSim(car: Model, chassis: BasePart): CarSim {
 		// it's open the speed cap rises and the car gets straight-line thrust.
 		const nitroUntil = (chassis.GetAttribute(NITRO_UNTIL_ATTR) as number | undefined) ?? 0;
 		const nitroActive = Workspace.GetServerTimeNow() < nitroUntil;
-		const speedCap = nitroActive ? maxForwardSpeed * NITRO_SPEED_MULT : maxForwardSpeed;
+		const speedCap = nitroActive || boostActive ? maxForwardSpeed * NITRO_SPEED_MULT : maxForwardSpeed;
 
 		// Speed-sensitive steering lock via the lateral-g cap (see steerMaxLatAccel).
 		// Positive steer = left (matches A).
@@ -450,74 +491,81 @@ export function createCarSim(car: Model, chassis: BasePart): CarSim {
 			for (const wheel of wheels) {
 				const rearHandbrake = handbrakeDown && !isFrontWheel(wheel.index);
 				const mu = tireGrip * (rearHandbrake ? handbrakeRearGrip : 1);
+				let lateralForce = 0;
+				let longForce = 0;
 
-				// Lateral force from slip angle (simplified Pacejka). Opposes slip.
-				const slipAngle = math.atan2(wheel.latVel, math.abs(wheel.longVel) + 0.5);
-				let lateralForce = -wheel.load * mu * math.sin(pacejkaC * math.atan(pacejkaB * slipAngle));
+				if (isDrifting) {
+					lateralForce = 0;
+					longForce = 0;
+				} else {
+					// Lateral force from slip angle (simplified Pacejka). Opposes slip.
+					const slipAngle = math.atan2(wheel.latVel, math.abs(wheel.longVel) + 0.5);
+					lateralForce = -wheel.load * mu * math.sin(pacejkaC * math.atan(pacejkaB * slipAngle));
 
-				// Slip-cancel clamp: never push harder than what nulls this wheel's
-				// sideways velocity this step. Near zero slip the tyre is extremely
-				// stiff, so the raw force overshoots the actual sideways momentum and
-				// reverses it every frame - that's the wobble. Capping the impulse to
-				// the momentum it's cancelling removes the oscillation while staying
-				// physical (at the grip limit the Pacejka force is the smaller term).
-				const latCancelForce = (lateralBite * math.abs(wheel.latVel) * massPerWheel) / dt;
-				if (math.abs(lateralForce) > latCancelForce) {
-					lateralForce = math.sign(lateralForce) * latCancelForce;
-				}
+					// Slip-cancel clamp: never push harder than what nulls this wheel's
+					// sideways velocity this step. Near zero slip the tyre is extremely
+					// stiff, so the raw force overshoots the actual sideways momentum and
+					// reverses it every frame - that's the wobble. Capping the impulse to
+					// the momentum it's cancelling removes the oscillation while staying
+					// physical (at the grip limit the Pacejka force is the smaller term).
+					const latCancelForce = (lateralBite * math.abs(wheel.latVel) * massPerWheel) / dt;
+					if (math.abs(lateralForce) > latCancelForce) {
+						lateralForce = math.sign(lateralForce) * latCancelForce;
+					}
 
-				const driveForce = isDrivenWheel(wheel.index) ? propForcePerWheel : 0;
+					const driveForce = isDrivenWheel(wheel.index) ? propForcePerWheel : 0;
 
-				// Wheelspin state: compare the tyre's demand (drive + the lateral
-				// force it's being asked for, pre-penalty) against its budget, then
-				// build or decay the spin level (see wheelspinAttack/Decay). Braking
-				// demand is excluded - lockup is the handbrake's job.
-				if (isDrivenWheel(wheel.index)) {
-					const budget = mu * wheel.load;
-					const demand = math.sqrt(driveForce * driveForce + lateralForce * lateralForce);
-					const overload = (demand - budget) / math.max(budget * wheelspinOverloadRange, 1);
-					const target = math.clamp(overload, 0, 1);
-					const rate = target > wheelSpin[wheel.index] ? wheelspinAttack : wheelspinDecay;
-					wheelSpin[wheel.index] = moveTowards(wheelSpin[wheel.index], target, rate * dt);
-				}
+					// Wheelspin state: compare the tyre's demand (drive + the lateral
+					// force it's being asked for, pre-penalty) against its budget, then
+					// build or decay the spin level (see wheelspinAttack/Decay). Braking
+					// demand is excluded - lockup is the handbrake's job.
+					if (isDrivenWheel(wheel.index)) {
+						const budget = mu * wheel.load;
+						const demand = math.sqrt(driveForce * driveForce + lateralForce * lateralForce);
+						const overload = (demand - budget) / math.max(budget * wheelspinOverloadRange, 1);
+						const target = math.clamp(overload, 0, 1);
+						const rate = target > wheelSpin[wheel.index] ? wheelspinAttack : wheelspinDecay;
+						wheelSpin[wheel.index] = moveTowards(wheelSpin[wheel.index], target, rate * dt);
+					}
 
-				// A spinning tyre keeps only kinetic friction, and what's left acts
-				// mostly along its rolling direction - lateral grip collapses.
-				const spin = wheelSpin[wheel.index];
-				const muEff = mu * (1 - spin * (1 - wheelspinMuKinetic));
-				lateralForce *= 1 - spin * wheelspinLatGripLoss;
+					// A spinning tyre keeps only kinetic friction, and what's left acts
+					// mostly along its rolling direction - lateral grip collapses.
+					const spin = wheelSpin[wheel.index];
+					const muEff = mu * (1 - spin * (1 - wheelspinMuKinetic));
+					lateralForce *= 1 - spin * wheelspinLatGripLoss;
 
-				// Longitudinal force: drive on powered wheels, braking on all.
-				let longForce = driveForce;
+					// Longitudinal force: drive on powered wheels, braking on all.
+					longForce = driveForce;
 
-				const isPowerSliding = input !== undefined && handbrakeDown && math.abs(input.steer) > 0.1;
-				const activeHandbrakeBrakeAccel = isPowerSliding ? 90 : handbrakeBrakeAccel;
-				const wheelBrakeAccel = rearHandbrake ? brakeAccel + activeHandbrakeBrakeAccel : brakeAccel;
-				if (wheelBrakeAccel > 0 && math.abs(wheel.longVel) > 0.01) {
-					// Clamp braking so it can't overshoot and reverse the wheel.
-					const stoppingAccel = math.min(wheelBrakeAccel, math.abs(wheel.longVel) / dt);
-					longForce -= math.sign(wheel.longVel) * stoppingAccel * massPerWheel;
-				}
+					const isPowerSliding = input !== undefined && handbrakeDown && math.abs(input.steer) > 0.1;
+					const activeHandbrakeBrakeAccel = isPowerSliding ? 90 : handbrakeBrakeAccel;
+					const wheelBrakeAccel = rearHandbrake ? brakeAccel + activeHandbrakeBrakeAccel : brakeAccel;
+					if (wheelBrakeAccel > 0 && math.abs(wheel.longVel) > 0.01) {
+						// Clamp braking so it can't overshoot and reverse the wheel.
+						const stoppingAccel = math.min(wheelBrakeAccel, math.abs(wheel.longVel) / dt);
+						longForce -= math.sign(wheel.longVel) * stoppingAccel * massPerWheel;
+					}
 
-				// Friction circle: combined grip can't exceed (effective) mu * Fz.
-				const maxForce = muEff * wheel.load;
-				const combined = math.sqrt(longForce * longForce + lateralForce * lateralForce);
-				if (combined > maxForce && combined > 0) {
-					const scale = maxForce / combined;
-					
-					// For driven wheels, prevent the engine drive force from dropping to zero during hard slides
-					if (isDrivenWheel(wheel.index) && driveForce !== 0) {
-						const isPowerSliding = input !== undefined && handbrakeDown && math.abs(input.steer) > 0.1;
-						const minDriveScale = isPowerSliding ? 0.75 : 0.45; // Preserve at least 75% engine power during power slides
-						const driveScale = math.max(scale, minDriveScale);
-						longForce *= driveScale;
+					// Friction circle: combined grip can't exceed (effective) mu * Fz.
+					const maxForce = muEff * wheel.load;
+					const combined = math.sqrt(longForce * longForce + lateralForce * lateralForce);
+					if (combined > maxForce && combined > 0) {
+						const scale = maxForce / combined;
 						
-						// Allocate the remaining grip budget to the lateral force
-						const remainingGripSq = math.max(0, maxForce * maxForce - longForce * longForce);
-						lateralForce = math.sign(lateralForce) * math.sqrt(remainingGripSq);
-					} else {
-						longForce *= scale;
-						lateralForce *= scale;
+						// For driven wheels, prevent the engine drive force from dropping to zero during hard slides
+						if (isDrivenWheel(wheel.index) && driveForce !== 0) {
+							const isPowerSliding = input !== undefined && handbrakeDown && math.abs(input.steer) > 0.1;
+							const minDriveScale = isPowerSliding ? 0.75 : 0.45; // Preserve at least 75% engine power during power slides
+							const driveScale = math.max(scale, minDriveScale);
+							longForce *= driveScale;
+							
+							// Allocate the remaining grip budget to the lateral force
+							const remainingGripSq = math.max(0, maxForce * maxForce - longForce * longForce);
+							lateralForce = math.sign(lateralForce) * math.sqrt(remainingGripSq);
+						} else {
+							longForce *= scale;
+							lateralForce *= scale;
+						}
 					}
 				}
 
@@ -543,9 +591,62 @@ export function createCarSim(car: Model, chassis: BasePart): CarSim {
 				math.clamp(speed * downforcePerSpeed, 0, maxDownforceAcceleration) * groundedRatio;
 			chassis.ApplyImpulse(cf.UpVector.mul(-downforceAccel * mass * dt));
 
-			// Light yaw damping to soften snap-oversteer without killing rotation.
-			const yawRate = chassis.AssemblyAngularVelocity.Dot(cf.UpVector);
-			chassis.ApplyAngularImpulse(cf.UpVector.mul(-yawRate * yawDamping * mass * dt));
+			// If drifting, apply velocity redirection constraint and counter-steering yaw rotation
+			if (isDrifting) {
+				// 1. Velocity Redirection Lerp Math:
+				// Decouple vertical and planar velocity to avoid messing with gravity/suspension
+				const planarVelocity = velocity.sub(cf.UpVector.mul(velocity.Dot(cf.UpVector)));
+				const currentMagnitude = planarVelocity.Magnitude;
+				
+				// Projected target forward direction along the terrain surface
+				const targetPlanarDir = cf.LookVector.sub(cf.UpVector.mul(cf.LookVector.Dot(cf.UpVector))).Unit;
+				const targetPlanarVelocity = targetPlanarDir.mul(currentMagnitude);
+				
+				// Lerp velocity direction towards LookVector
+				let newPlanarVelocity = planarVelocity.Lerp(targetPlanarVelocity, DRIFT_GRIP_FACTOR * dt);
+				
+				// Preserve momentum (at least 90% of forward speed or planarMagnitude to prevent stalling)
+				let targetSpeed = currentMagnitude;
+				if (smoothedThrottle > 0) {
+					targetSpeed = math.min(speedCap, targetSpeed + driveAcceleration * dt);
+				} else if (smoothedThrottle < 0) {
+					targetSpeed = math.max(0, targetSpeed - brakeAcceleration * dt);
+				}
+				
+				// Ensure at least 90% of forwardSpeed momentum is preserved
+				const minSpeed = math.max(currentMagnitude * 0.9, forwardSpeed * 0.9);
+				const speedToUse = math.max(targetSpeed, minSpeed);
+				
+				if (newPlanarVelocity.Magnitude > 0.01) {
+					newPlanarVelocity = newPlanarVelocity.Unit.mul(speedToUse);
+				} else {
+					newPlanarVelocity = targetPlanarDir.mul(speedToUse);
+				}
+				
+				// Combine planar and vertical velocities
+				chassis.AssemblyLinearVelocity = newPlanarVelocity.add(cf.UpVector.mul(velocity.Dot(cf.UpVector)));
+
+				// 2. Custom Drift Yaw Rotation with Counter-Steering Control:
+				// If player steers into drift direction: sharpen turn.
+				// If player counter-steers away: widen turn.
+				const steerCompat = input.steer * driftDirection;
+				const baseDriftTurnRate = math.rad(52); // turn rate for smooth drifts
+				let activeTurnRate = baseDriftTurnRate;
+				if (steerCompat > 0) {
+					// Steering into turn: sharpen turning radius
+					activeTurnRate *= 1 + steerCompat * 0.6;
+				} else {
+					// Counter-steering: widen turning radius (slip outward)
+					activeTurnRate *= 1 + steerCompat * 0.75;
+				}
+				
+				// Apply rotation torque around the ground normal
+				chassis.ApplyAngularImpulse(cf.UpVector.mul(driftDirection * activeTurnRate * mass * dt));
+			} else {
+				// Light yaw damping to soften snap-oversteer without killing rotation.
+				const yawRate = chassis.AssemblyAngularVelocity.Dot(cf.UpVector);
+				chassis.ApplyAngularImpulse(cf.UpVector.mul(-yawRate * yawDamping * mass * dt));
+			}
 		}
 
 		// --- Anti-flip / leveling & Ground Normal Alignment --------------------
@@ -556,7 +657,12 @@ export function createCarSim(car: Model, chassis: BasePart): CarSim {
 
 		// Raycast down from the chassis center to find the ground normal under the vehicle.
 		const groundCast = Workspace.Raycast(chassis.Position, new Vector3(0, -35, 0), groundRayParams);
-		const targetUp = groundCast ? groundCast.Normal : new Vector3(0, 1, 0);
+		let targetUp = groundCast ? groundCast.Normal : new Vector3(0, 1, 0);
+
+		if (isDrifting) {
+			const driftTilt = cf.RightVector.mul(-driftDirection * 0.18);
+			targetUp = targetUp.add(driftTilt).Unit;
+		}
 
 		const tiltAxis = cf.UpVector.Cross(targetUp);
 
