@@ -242,7 +242,7 @@ function buildGround() {
 
 	// Tint the terrain materials to match the warm desert palette.
 	terrain.SetMaterialColor(Enum.Material.Ground, Color3.fromRGB(150, 110, 72));
-	terrain.SetMaterialColor(Enum.Material.Salt, Color3.fromRGB(208, 198, 172));
+	terrain.SetMaterialColor(Enum.Material.Salt, Color3.fromRGB(150, 110, 72));
 	terrain.SetMaterialColor(Enum.Material.Sandstone, Color3.fromRGB(172, 122, 80));
 
 	// Reset and establish the solid distant plateau. The playable square is
@@ -294,7 +294,7 @@ function buildGround() {
 						const surface = groundYAt(x, z) - resolution / 2;
 						const fill = math.clamp((surface - cellBottom) / resolution, 0, 1);
 						const r = math.sqrt(x * x + z * z);
-						materialRow.push(fill > 0 ? (r < LAKEBED_INNER ? Enum.Material.Salt : Enum.Material.Ground) : Enum.Material.Air);
+						materialRow.push(fill > 0 ? Enum.Material.Ground : Enum.Material.Air);
 						occupancyRow.push(fill);
 					}
 					materialColumn.push(materialRow);
@@ -468,9 +468,10 @@ function buildBoundaryFooting(arena: Model) {
 		}
 
 		if (sector.industrialFooting && i % 2 === 0) makeBoundaryRail(arena, cf, i);
-		if ((sector.theme === "collapsed" || sector.theme === "industrial") && i % 6 === 0) {
-			makeBoundaryWreck(arena, cf);
-		}
+		// Boundary wreck and tires removed for clutter-free driving
+		// if ((sector.theme === "collapsed" || sector.theme === "industrial") && i % 6 === 0) {
+		// 	makeBoundaryWreck(arena, cf);
+		// }
 	}
 }
 
@@ -1645,14 +1646,26 @@ function buildArena() {
 	buildPylons(arena);
 	buildWaterTower(arena);
 	buildWindmill(arena);
-	buildDerrick(arena);
+	// buildDerrick(arena);
 	buildFloodlights(arena);
 	buildBillboards(arena);
 	buildScrub(arena);
-	buildDeadTrees(arena);
-	buildJunk(arena);
+	// buildDeadTrees(arena);
+	// buildJunk(arena);
 	buildDust(arena);
 	buildSpawn(arena);
+
+	// Scan the generated Arena model for all light pole parts and disable their collisions
+	// while leaving light source attachments fully functional.
+	for (const child of arena.GetDescendants()) {
+		if (child.IsA("BasePart")) {
+			if (child.Name === "FloodPole" || child.Name === "FloodRack" || child.Name === "FloodLens") {
+				child.CanCollide = false;
+				child.CanQuery = false;
+				child.CanTouch = false;
+			}
+		}
+	}
 }
 
 buildArena();
