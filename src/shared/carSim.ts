@@ -717,6 +717,9 @@ export function createCarSim(car: Model, chassis: BasePart): CarSim {
 			activeRollPitchDamping += verticalSpeed * 1.5;
 		}
 		chassis.ApplyAngularImpulse(rollPitchVelocity.mul(-activeRollPitchDamping * mass * dt));
+
+		// Set the IsDrifting attribute so clients can sync drift visual effects (sparks/smoke/trails)
+		car.SetAttribute("IsDrifting", isDrifting);
 	}
 
 	sim.step = step;

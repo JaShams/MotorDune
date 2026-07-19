@@ -88,6 +88,17 @@ ContextActionService.BindActionAtPriority(
 	CONTROLLER_BINDINGS.fire,
 );
 
+ContextActionService.BindActionAtPriority(
+	"DerbyBlockKeyboardHandbrakeJump",
+	() =>
+		isLocalPlayerDriving() && !isGameplayInputBlocked()
+			? Enum.ContextActionResult.Sink
+			: Enum.ContextActionResult.Pass,
+	false,
+	Enum.ContextActionPriority.High.Value + 1,
+	Enum.KeyCode.Space,
+);
+
 function refreshJumpLock() {
 	const humanoid = getLocalHumanoid();
 	if (humanoid !== undefined) humanoid.SetStateEnabled(Enum.HumanoidStateType.Jumping, seat.Occupant !== humanoid);
