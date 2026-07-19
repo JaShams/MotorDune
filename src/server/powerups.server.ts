@@ -1032,7 +1032,19 @@ RunService.Heartbeat.Connect((dt) => {
 		let groundNormal = Vector3.yAxis;
 		if (projectile.kind === "shunt") {
 			const ground = sampleShuntGround(nextPosition.X, nextPosition.Z, projectile.part.Position.Y);
-			nextPosition = new Vector3(nextPosition.X, ground.y + SHUNT_GROUND_CLEARANCE, nextPosition.Z);
+			// Smoothly interpolate the height to prevent sharp vertical snapping and clipping over voxel corners.
+			const targetY = ground.y + SHUNT_GROUND_CLEARANCE;
+			const currentY = projectile.part.Position.Y;
+			const newY = currentY + (targetY - currentY) * math.min(1, 20 * dt);
+			nextPosition = new Vector3(nextPosition.X, newY, nextPosition.Z);
+			groundNormal = ground.normal;
+		} else if (projectile.kind === "bolt") {
+			const ground = sampleShuntGround(nextPosition.X, nextPosition.Z, projectile.part.Position.Y);
+			// Bolts are fast and run close to the floor (clearance ~2.0 studs)
+			const targetY = ground.y + 2.0;
+			const currentY = projectile.part.Position.Y;
+			const newY = currentY + (targetY - currentY) * math.min(1, 25 * dt); // fast lerp since bolts travel at 380 studs/s
+			nextPosition = new Vector3(nextPosition.X, newY, nextPosition.Z);
 			groundNormal = ground.normal;
 		}
 		const sweptStep = nextPosition.sub(projectile.part.Position);
@@ -1044,7 +1056,7 @@ RunService.Heartbeat.Connect((dt) => {
 						projectile.part.Position,
 						BOLT_HIT_RADIUS,
 						sweptStep,
-						projectileRayParams(projectile.firer),
+						shuntPathParams(projectile.firer),
 					)
 				: Workspace.Raycast(projectile.part.Position, sweptStep, shuntPathParams(projectile.firer));
 
@@ -1073,10 +1085,11 @@ RunService.Heartbeat.Connect((dt) => {
 			continue;
 		}
 
-		if (projectile.kind === "shunt") {
+		if (projectile.kind === "shunt" || projectile.kind === "bolt") {
 			const flatDirection = new Vector3(projectile.velocity.X, 0, projectile.velocity.Z).Unit;
 			const slopeDirection = flatDirection.sub(groundNormal.mul(flatDirection.Dot(groundNormal))).Unit;
 			projectile.part.CFrame = CFrame.lookAt(nextPosition, nextPosition.add(slopeDirection), groundNormal);
+			projectile.velocity = slopeDirection.mul(projectile.velocity.Magnitude);
 		} else {
 			projectile.part.CFrame = CFrame.lookAt(nextPosition, nextPosition.add(projectile.velocity));
 		}
