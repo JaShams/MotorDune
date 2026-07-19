@@ -530,18 +530,69 @@ export function createCarSim(car: Model, chassis: BasePart): CarSim {
 			chassis.ApplyAngularImpulse(cf.UpVector.mul(-yawRate * yawDamping * mass * dt));
 		}
 
-		// --- Anti-flip / leveling ----------------------------------------------
-		const worldUp = new Vector3(0, 1, 0);
-		const tiltAxis = cf.UpVector.Cross(worldUp);
+		// --- Anti-flip / leveling & Ground Normal Alignment --------------------
+		const groundRayParams = new RaycastParams();
+		groundRayParams.FilterType = Enum.RaycastFilterType.Include;
+		groundRayParams.FilterDescendantsInstances = [Workspace.Terrain];
+		groundRayParams.IgnoreWater = true;
 
+		// Raycast down from the chassis center to find the ground normal under the vehicle.
+		const groundCast = Workspace.Raycast(chassis.Position, new Vector3(0, -35, 0), groundRayParams);
+		const targetUp = groundCast ? groundCast.Normal : new Vector3(0, 1, 0);
+
+		const tiltAxis = cf.UpVector.Cross(targetUp);
+
+		// Significantly increased alignment torque (from 28 to 95) for rapid upright realignment.
+		const activeUprightStrength = 95;
 		if (tiltAxis.Magnitude > 0.01) {
-			chassis.ApplyAngularImpulse(tiltAxis.mul(uprightStrength * mass * dt));
+			chassis.ApplyAngularImpulse(tiltAxis.mul(activeUprightStrength * mass * dt));
 		}
 
+		// --- Arcade Grounding Force ("Glue") -----------------------------------
+		// If the car is airborne (no wheels grounded) but the ground is close,
+		// apply a strong downward force to pull it back to the terrain normal.
+		if (groundedCount === 0 && groundCast) {
+			const dist = groundCast.Distance;
+			if (dist < 20) {
+				const glueAcceleration = 130; // studs/s^2 downward acceleration
+				chassis.ApplyImpulse(targetUp.mul(-glueAcceleration * mass * dt));
+			}
+		}
+
+		// --- Hard Flip Constraint & AngularVelocity Clamp --------------------
+		// Calculate deviation angle from the ground normal. If it exceeds a critical threshold
+		// (e.g. 40 degrees), manually rotate the CFrame back and cancel the flip momentum.
+		const dot = cf.UpVector.Dot(targetUp);
+		const tiltAngle = math.acos(math.clamp(dot, -1, 1));
+		const maxTilt = math.rad(40); // 40 degrees maximum deviation from ground normal
+
+		if (tiltAngle > maxTilt) {
+			const axis = cf.UpVector.Cross(targetUp);
+			if (axis.Magnitude > 1e-4) {
+				const normAxis = axis.Unit;
+				// 1. Force the CFrame to snap back to the maxTilt boundary
+				const correctiveAngle = tiltAngle - maxTilt;
+				chassis.CFrame = CFrame.fromAxisAngle(normAxis, correctiveAngle).mul(cf.Rotation).add(cf.Position);
+
+				// 2. Kill the angular velocity component rotating the car further into the flip
+				const angVel = chassis.AssemblyAngularVelocity;
+				chassis.AssemblyAngularVelocity = angVel.sub(normAxis.mul(angVel.Dot(normAxis)));
+			}
+		}
+
+		// --- Dynamic Landing / Impact Damping ----------------------------------
 		const angularVelocity = chassis.AssemblyAngularVelocity;
 		const yawVelocity = cf.UpVector.mul(angularVelocity.Dot(cf.UpVector));
 		const rollPitchVelocity = angularVelocity.sub(yawVelocity);
-		chassis.ApplyAngularImpulse(rollPitchVelocity.mul(-rollPitchDamping * mass * dt));
+
+		let activeRollPitchDamping = rollPitchDamping;
+		const verticalSpeed = math.abs(chassis.AssemblyLinearVelocity.Dot(cf.UpVector));
+		if (verticalSpeed > 8) {
+			// Absorb high vertical landing energy into the suspension damping dynamically
+			// instead of converting it into rotational roll/pitch torque.
+			activeRollPitchDamping += verticalSpeed * 1.5;
+		}
+		chassis.ApplyAngularImpulse(rollPitchVelocity.mul(-activeRollPitchDamping * mass * dt));
 	}
 
 	sim.step = step;
