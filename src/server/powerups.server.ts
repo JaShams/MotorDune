@@ -83,6 +83,83 @@ const MINE_KNOCK_AWAY = 28;
 
 const BARGE_KNOCK = 46;
 
+// --- Dynamic Rival System Data & Helpers --------------------------------------
+interface Interaction {
+	hits: number;
+	lastDamageReceivedAt: number;
+}
+
+const mutualCombatScores = new Map<string, Map<string, Interaction>>();
+const isRetributionRival = new Map<string, boolean>();
+
+function recordMutualHit(victimName: string, attackerName: string) {
+	const now = os.clock();
+
+	// 1. Update victim's perspective (received damage from attacker)
+	if (!mutualCombatScores.has(victimName)) {
+		mutualCombatScores.set(victimName, new Map());
+	}
+	const victimMap = mutualCombatScores.get(victimName)!;
+	if (!victimMap.has(attackerName)) {
+		victimMap.set(attackerName, { hits: 0, lastDamageReceivedAt: 0 });
+	}
+	const victimData = victimMap.get(attackerName)!;
+	victimData.hits += 1;
+	victimData.lastDamageReceivedAt = now;
+
+	// 2. Update attacker's perspective (traded hit with victim)
+	if (!mutualCombatScores.has(attackerName)) {
+		mutualCombatScores.set(attackerName, new Map());
+	}
+	const attackerMap = mutualCombatScores.get(attackerName)!;
+	if (!attackerMap.has(victimName)) {
+		attackerMap.set(victimName, { hits: 0, lastDamageReceivedAt: 0 });
+	}
+	const attackerData = attackerMap.get(victimName)!;
+	attackerData.hits += 1;
+}
+
+function evaluateDamageRival(carName: string, car: Model) {
+	if (isRetributionRival.get(carName) === true) return;
+
+	const scores = mutualCombatScores.get(carName);
+	if (!scores || scores.size() === 0) {
+		car.SetAttribute("ActiveRival", undefined);
+		return;
+	}
+
+	let bestRival: string | undefined = undefined;
+	let maxHits = 0;
+	let lastDamageTime = 0;
+
+	for (const [opponentName, data] of scores) {
+		if (data.hits > maxHits) {
+			maxHits = data.hits;
+			bestRival = opponentName;
+			lastDamageTime = data.lastDamageReceivedAt;
+		} else if (data.hits === maxHits && maxHits > 0) {
+			if (data.lastDamageReceivedAt > lastDamageTime) {
+				bestRival = opponentName;
+				lastDamageTime = data.lastDamageReceivedAt;
+			}
+		}
+	}
+
+	if (bestRival !== undefined) {
+		car.SetAttribute("ActiveRival", bestRival);
+	} else {
+		car.SetAttribute("ActiveRival", undefined);
+	}
+}
+
+Workspace.GetAttributeChangedSignal(MATCH_PHASE_ATTR).Connect(() => {
+	const phase = Workspace.GetAttribute(MATCH_PHASE_ATTR);
+	if (phase === "intermission" || phase === "ended") {
+		mutualCombatScores.clear();
+		isRetributionRival.clear();
+	}
+});
+
 // --- Remotes ----------------------------------------------------------------
 const remotes = new Instance("Folder");
 remotes.Name = REMOTES_FOLDER;
@@ -213,10 +290,34 @@ function wreckCar(car: Model, attacker?: Model) {
 	// A wreck dumps the car's held powerups.
 	for (const attr of SLOT_ATTRS) car.SetAttribute(attr, "");
 
-	if (attacker) addCarPoints(attacker, WRECK_BONUS_POINTS);
+	if (attacker) {
+		addCarPoints(attacker, WRECK_BONUS_POINTS);
+
+		// Dynamic Rival System:
+		// If the attacker wrecks their active Rival back, clear the status.
+		const attackerRival = attacker.GetAttribute("ActiveRival") as string | undefined;
+		if (attackerRival === car.Name) {
+			attacker.SetAttribute("ActiveRival", undefined);
+			isRetributionRival.set(attacker.Name, false);
+			// Reset mutual hits with this opponent
+			const scores = mutualCombatScores.get(attacker.Name);
+			if (scores) {
+				scores.delete(car.Name);
+			}
+		}
+
+		// Retribution Rule: Flag the attacker as the victim's active Rival.
+		car.SetAttribute("ActiveRival", attacker.Name);
+		isRetributionRival.set(car.Name, true);
+	}
 
 	task.delay(WRECK_RESET_SECONDS, () => {
-		if (car.IsDescendantOf(game)) car.SetAttribute(HEALTH_ATTR, MAX_HEALTH);
+		if (car.IsDescendantOf(game)) {
+			car.SetAttribute(HEALTH_ATTR, MAX_HEALTH);
+			// Start new lifecycle: reset hit tracking and Retribution status
+			mutualCombatScores.set(car.Name, new Map());
+			isRetributionRival.set(car.Name, false);
+		}
 	});
 }
 
@@ -233,10 +334,19 @@ function damageCar(car: Model, amount: number, attacker?: Model) {
 	if (scoringAttacker) {
 		addCarPoints(scoringAttacker, math.floor(amount));
 		recordHit(scoringAttacker);
+
+		// Record the mutual hit for dynamic Rival tracking
+		recordMutualHit(car.Name, scoringAttacker.Name);
 	}
 
 	const wrecked = newHealth <= 0;
-	if (wrecked) wreckCar(car, scoringAttacker);
+	if (wrecked) {
+		wreckCar(car, scoringAttacker);
+	} else if (scoringAttacker) {
+		// Evaluate if we should update active Rival under the Damage Exchange Rule
+		evaluateDamageRival(car.Name, car);
+		evaluateDamageRival(scoringAttacker.Name, scoringAttacker);
+	}
 	return wrecked;
 }
 
@@ -899,8 +1009,9 @@ function sampleShuntGround(x: number, z: number, referenceY: number) {
 	params.FilterType = Enum.RaycastFilterType.Include;
 	params.FilterDescendantsInstances = [Workspace.Terrain];
 	params.IgnoreWater = true;
-	const rayTop = math.max(referenceY, fallbackY) + 80;
-	const hit = Workspace.Raycast(new Vector3(x, rayTop, z), new Vector3(0, -200, 0), params);
+	// Start the raycast origin higher to guarantee it starts above voxel corners and slopes.
+	const rayTop = math.max(referenceY, fallbackY) + 120;
+	const hit = Workspace.Raycast(new Vector3(x, rayTop, z), new Vector3(0, -250, 0), params);
 	if (hit) return { y: hit.Position.Y, normal: hit.Normal };
 
 	// Terrain can briefly be unavailable during streaming/build transitions.

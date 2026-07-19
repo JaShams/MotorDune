@@ -49,7 +49,12 @@ const update = (folder.FindFirstChild(SESSION_UPDATE) as RemoteEvent | undefined
 update.Name = SESSION_UPDATE;
 update.Parent = folder;
 
-const sessions = MemoryStoreService.GetHashMap("DDD_PrivateSessions_v2");
+let sessions: MemoryStoreHashMap | undefined;
+try {
+	sessions = MemoryStoreService.GetHashMap("DDD_PrivateSessions_v2");
+} catch (err) {
+	warn(`[session] MemoryStoreService unavailable (unpublished place). Private matches will be disabled. Error: ${err}`);
+}
 
 function code() {
 	const [compact] = string.gsub(HttpService.GenerateGUID(false), "-", "");
@@ -218,6 +223,7 @@ request.OnServerEvent.Connect((player, actionArg, bodyArg) => {
 		const [ok, err] = pcall(() => {
 			if (RunService.IsStudio()) error("Private server teleports must be tested in the published Roblox app");
 			if (action === "create") {
+				if (!sessions) error("MemoryStoreService is not available in this environment");
 				if (!validRules(body.rules)) error("Invalid match rules");
 				const [accessCode] = TeleportService.ReserveServerAsync(game.PlaceId) as LuaTuple<[string, string]>;
 				const joinCode = code();
@@ -227,6 +233,7 @@ request.OnServerEvent.Connect((player, actionArg, bodyArg) => {
 				return;
 			}
 			if (action === "join" && typeIs(body.code, "string")) {
+				if (!sessions) error("MemoryStoreService is not available in this environment");
 				const [joinCode] = string.gsub(body.code.upper(), "%s+", "");
 				const found = sessions.GetAsync(`private_${joinCode}`) as
 					| { accessCode: string; match: MatchPayload }
