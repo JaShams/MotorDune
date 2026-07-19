@@ -1,4 +1,4 @@
-import { Players, RunService, SoundService, TweenService, Workspace } from "@rbxts/services";
+import { Players, ReplicatedStorage, RunService, SoundService, TweenService, Workspace } from "@rbxts/services";
 import { CHASSIS_NAME } from "shared/carConfig";
 import {
 	BOT_LABEL_ATTR,
@@ -9,7 +9,7 @@ import {
 	MAX_HEALTH,
 	POINTS_NAME,
 } from "shared/healthConfig";
-import { FX_FOLDER, GUIDANCE_ACTIVE_ATTR, POWERUP_SOUND_IDS, TARGET_OWNER_ATTR } from "shared/powerupConfig";
+import { FX_FOLDER, GUIDANCE_ACTIVE_ATTR, POWERUP_SOUND_IDS, TARGET_OWNER_ATTR, REMOTES_FOLDER, TICKER_REMOTE } from "shared/powerupConfig";
 import { CONTROLLER_BINDINGS } from "shared/inputConfig";
 import { controllerButtonLabel, getInputScheme } from "./controlInput";
 import { waitForLocalCar } from "./localCar";
@@ -530,3 +530,99 @@ function refreshVisibility() {
 
 seat.GetPropertyChangedSignal("Occupant").Connect(refreshVisibility);
 refreshVisibility();
+
+// ---------------------------------------------------------------------------
+// GLOBAL EVENT TICKER — top-center of the screen. Fades and cycles messages.
+// ---------------------------------------------------------------------------
+const tickerRemote = ReplicatedStorage.WaitForChild(REMOTES_FOLDER).WaitForChild(TICKER_REMOTE) as RemoteEvent;
+
+const tickerFrame = new Instance("Frame");
+tickerFrame.Name = "TickerFrame";
+tickerFrame.AnchorPoint = new Vector2(0.5, 0);
+tickerFrame.Position = new UDim2(0.5, 0, 0.05, 0);
+tickerFrame.Size = new UDim2(0.4, 0, 0.04, 0);
+tickerFrame.BackgroundColor3 = Color3.fromRGB(12, 14, 22);
+tickerFrame.BackgroundTransparency = 1; // start fully transparent
+tickerFrame.BorderSizePixel = 0;
+tickerFrame.Visible = false;
+tickerFrame.Parent = gui;
+
+const tickerCorner = new Instance("UICorner");
+tickerCorner.CornerRadius = new UDim(0, 8);
+tickerCorner.Parent = tickerFrame;
+
+const tickerStroke = new Instance("UIStroke");
+tickerStroke.Thickness = 2;
+tickerStroke.Color = Color3.fromRGB(70, 80, 100);
+tickerStroke.Transparency = 1; // start fully transparent
+tickerStroke.Parent = tickerFrame;
+
+const tickerText = new Instance("TextLabel");
+tickerText.Name = "TickerText";
+tickerText.BackgroundTransparency = 1;
+tickerText.Size = UDim2.fromScale(1, 1);
+tickerText.Font = Enum.Font.GothamBold;
+tickerText.TextSize = 14;
+tickerText.TextColor3 = Color3.fromRGB(255, 220, 60); // Golden highlights
+tickerText.TextStrokeColor3 = Color3.fromRGB(8, 10, 16);
+tickerText.TextStrokeTransparency = 1; // start fully transparent
+tickerText.TextTransparency = 1; // start fully transparent
+tickerText.Text = "";
+tickerText.Parent = tickerFrame;
+
+const tickerQueue = new Array<string>();
+let tickerActive = false;
+
+function processTickerQueue() {
+	if (tickerActive || tickerQueue.size() === 0) return;
+	tickerActive = true;
+
+	task.spawn(() => {
+		while (tickerQueue.size() > 0) {
+			const message = tickerQueue.remove(0)!;
+			tickerText.Text = message;
+			tickerFrame.Visible = true;
+
+			// Fade In
+			TweenService.Create(tickerFrame, new TweenInfo(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+				BackgroundTransparency: 0.4
+			}).Play();
+			TweenService.Create(tickerStroke, new TweenInfo(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+				Transparency: 0.4
+			}).Play();
+			TweenService.Create(tickerText, new TweenInfo(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+				TextTransparency: 0,
+				TextStrokeTransparency: 0.3
+			}).Play();
+
+			// Wait time dynamically speeds up if multiple rapid destructions occur to catch up
+			const displayDuration = tickerQueue.size() > 0 ? 1.0 : 2.5;
+			task.wait(displayDuration);
+
+			// Fade Out
+			const fadeOut = TweenService.Create(tickerFrame, new TweenInfo(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+				BackgroundTransparency: 1
+			});
+			TweenService.Create(tickerStroke, new TweenInfo(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+				Transparency: 1
+			}).Play();
+			TweenService.Create(tickerText, new TweenInfo(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+				TextTransparency: 1,
+				TextStrokeTransparency: 1
+			}).Play();
+
+			fadeOut.Play();
+			fadeOut.Completed.Wait();
+			tickerFrame.Visible = false;
+		}
+		tickerActive = false;
+	});
+}
+
+tickerRemote.OnClientEvent.Connect((messageArg: unknown) => {
+	const message = messageArg as string;
+	if (typeIs(message, "string")) {
+		tickerQueue.push(message);
+		processTickerQueue();
+	}
+});
