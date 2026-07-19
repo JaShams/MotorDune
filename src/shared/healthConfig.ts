@@ -13,10 +13,10 @@ export const WRECK_RESET_SECONDS = 3;
 
 // Damage dealt by each powerup hit (shield/nitro are defensive/boost only).
 export const POWERUP_DAMAGE: Record<PowerupType, number> = {
-	bolt: 12,
-	shunt: 30,
-	mine: 35,
-	barge: 18,
+	bolt: 20,
+	shunt: 60,
+	mine: 70,
+	barge: 35,
 	shield: 0,
 	nitro: 0,
 };

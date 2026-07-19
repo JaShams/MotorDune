@@ -1,4 +1,4 @@
-import { HapticService, Players, ReplicatedStorage, RunService, SoundService, UserInputService } from "@rbxts/services";
+import { HapticService, Players, ReplicatedStorage, RunService, SoundService, TweenService, UserInputService } from "@rbxts/services";
 import {
 	FEEDBACK_REMOTE,
 	POWERUP_INFO,
@@ -108,7 +108,35 @@ marker.TextSize = 21;
 marker.TextStrokeColor3 = Color3.fromRGB(8, 10, 16);
 marker.TextStrokeTransparency = 0.25;
 marker.TextTransparency = 1;
-marker.Parent = gui;
+const wreckBanner = new Instance("TextLabel");
+wreckBanner.Name = "WreckBanner";
+wreckBanner.AnchorPoint = new Vector2(0.5, 0.5);
+wreckBanner.Position = new UDim2(0.5, 0, 0.5, 0);
+wreckBanner.Size = new UDim2(0.8, 0, 0.15, 0);
+wreckBanner.BackgroundTransparency = 1;
+wreckBanner.Font = Enum.Font.GothamBlack;
+wreckBanner.TextSize = 72;
+wreckBanner.TextColor3 = Color3.fromRGB(255, 50, 50);
+wreckBanner.TextStrokeColor3 = Color3.fromRGB(0, 0, 0);
+wreckBanner.TextStrokeTransparency = 1;
+wreckBanner.TextTransparency = 1;
+wreckBanner.Text = "WRECKED";
+wreckBanner.Parent = gui;
+
+const hitmarker = new Instance("TextLabel");
+hitmarker.Name = "Hitmarker";
+hitmarker.AnchorPoint = new Vector2(0.5, 0.5);
+hitmarker.Position = new UDim2(0.5, 0, 0.5, 0);
+hitmarker.Size = new UDim2(0.1, 0, 0.1, 0);
+hitmarker.BackgroundTransparency = 1;
+hitmarker.Font = Enum.Font.GothamBold;
+hitmarker.TextSize = 28;
+hitmarker.TextColor3 = new Color3(1, 1, 1);
+hitmarker.TextStrokeColor3 = Color3.fromRGB(0, 0, 0);
+hitmarker.TextStrokeTransparency = 0.3;
+hitmarker.TextTransparency = 1;
+hitmarker.Text = "✕";
+hitmarker.Parent = gui;
 
 let flashStrength = 0;
 let markerStrength = 0;
@@ -138,13 +166,43 @@ feedbackRemote.OnClientEvent.Connect((rawFeedback) => {
 	const color = POWERUP_INFO[feedback.kind].color;
 
 	if (feedback.type === "hitConfirm") {
-		marker.Text = feedback.wrecked ? `✦ WRECKED  +${feedback.damage}` : `✦ HIT  +${feedback.damage}`;
+		// Update detailed confirmation text: indicating the powerup kind and damage
+		marker.Text = `✦ ${feedback.kind.upper()} HIT  +${feedback.damage}`;
 		marker.TextColor3 = color;
 		markerStrength = 1;
 		markerHoldUntil = os.clock() + 0.18;
 		marker.TextTransparency = 0;
 		marker.TextStrokeTransparency = 0.25;
 		playLocalSound(POWERUP_SOUND_IDS.uiConfirm, 0.24, 1.15, 0.7);
+
+		// Trigger temporary crosshair overlay (hitmarker)
+		hitmarker.TextTransparency = 0;
+		hitmarker.TextColor3 = color;
+		hitmarker.TextSize = 28;
+		TweenService.Create(hitmarker, new TweenInfo(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+			TextTransparency: 1,
+			TextSize: 42
+		}).Play();
+
+		// Trigger centralized wreck banner if opponent is reduced to 0 health (wrecked)
+		if (feedback.wrecked) {
+			wreckBanner.TextTransparency = 0;
+			wreckBanner.TextStrokeTransparency = 0.1;
+			wreckBanner.Size = new UDim2(0.8, 0, 0.15, 0);
+			TweenService.Create(wreckBanner, new TweenInfo(0.15, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+				Size: new UDim2(1.0, 0, 0.18, 0)
+			}).Play();
+
+			// Fade out after a delay
+			task.delay(1.2, () => {
+				TweenService.Create(wreckBanner, new TweenInfo(0.5, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+					TextTransparency: 1,
+					TextStrokeTransparency: 1
+				}).Play();
+			});
+
+			playLocalSound(POWERUP_SOUND_IDS.debrisImpact, 0.8, 0.9, 1.5);
+		}
 		return;
 	}
 
