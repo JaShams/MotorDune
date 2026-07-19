@@ -1,6 +1,7 @@
-import { Players, TweenService, Workspace } from "@rbxts/services";
+import { Players, RunService, TweenService, Workspace } from "@rbxts/services";
 import { CHASSIS_NAME, SEAT_NAME } from "shared/carConfig";
 import { HEALTH_ATTR, healthColor, MAX_HEALTH } from "shared/healthConfig";
+import { waitForLocalCar } from "./localCar";
 
 // ---------------------------------------------------------------------------
 // OVERHEAD HEALTH BARS
@@ -18,6 +19,17 @@ const localPlayer = Players.LocalPlayer;
 const BAR_STUDS_OFFSET = new Vector3(0, 3.4, 0);
 const MAX_DISTANCE = 300; // match the bot name tags
 
+interface TrackerElements {
+	billboard: BillboardGui;
+	trackerBillboard: BillboardGui;
+	arrowLabel: TextLabel;
+	rivalLabel?: TextLabel;
+}
+
+const activeTrackers = new Map<Model, TrackerElements>();
+let localCar: Model | undefined = undefined;
+let updateRivalIndicators: (() => void) | undefined = undefined;
+
 function attachHealthBar(car: Model) {
 	const chassisChild = car.WaitForChild(CHASSIS_NAME, 10);
 	const seatChild = car.WaitForChild(SEAT_NAME, 10);
@@ -33,6 +45,26 @@ function attachHealthBar(car: Model) {
 	billboard.AlwaysOnTop = false;
 	billboard.MaxDistance = MAX_DISTANCE;
 	billboard.Parent = chassis;
+
+	const trackerBillboard = new Instance("BillboardGui");
+	trackerBillboard.Name = "TrackerIndicator";
+	trackerBillboard.Size = UDim2.fromOffset(24, 24);
+	trackerBillboard.StudsOffset = new Vector3(0, 4.8, 0); // Position it cleanly above the health bar
+	trackerBillboard.AlwaysOnTop = true; // Stay visible behind walls/obstacles
+	trackerBillboard.MaxDistance = 500; // Visible across the map
+	trackerBillboard.Parent = chassis;
+
+	const arrowLabel = new Instance("TextLabel");
+	arrowLabel.Size = UDim2.fromScale(1, 1);
+	arrowLabel.BackgroundTransparency = 1;
+	arrowLabel.Font = Enum.Font.GothamBold;
+	arrowLabel.Text = "▼";
+	arrowLabel.TextScaled = true;
+	arrowLabel.TextColor3 = chassis.Color; // Match respective bot or player skin color
+	arrowLabel.TextTransparency = 0.25; // Semi-transparent
+	arrowLabel.TextStrokeTransparency = 0.4;
+	arrowLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0);
+	arrowLabel.Parent = trackerBillboard;
 
 	const driverName = new Instance("TextLabel");
 	driverName.BackgroundTransparency = 1;
@@ -104,12 +136,23 @@ function attachHealthBar(car: Model) {
 		const driver = character ? Players.GetPlayerFromCharacter(character) : undefined;
 		driverName.Text = driver ? driver.DisplayName : "";
 		billboard.Enabled = driver === undefined || driver !== localPlayer;
+		trackerBillboard.Enabled = driver === undefined || driver !== localPlayer;
 	}
 
 	refreshHealth();
 	refreshOccupant();
 	car.GetAttributeChangedSignal(HEALTH_ATTR).Connect(refreshHealth);
 	seat.GetPropertyChangedSignal("Occupant").Connect(refreshOccupant);
+
+	activeTrackers.set(car, {
+		billboard,
+		trackerBillboard,
+		arrowLabel,
+	});
+
+	if (updateRivalIndicators) {
+		updateRivalIndicators();
+	}
 }
 
 // Same car shape test the server systems use: a workspace model holding a
@@ -120,3 +163,83 @@ function tryAttach(child: Instance) {
 
 for (const child of Workspace.GetChildren()) tryAttach(child);
 Workspace.ChildAdded.Connect(tryAttach);
+
+// Clean up trackers when a car model leaves Workspace
+Workspace.ChildRemoved.Connect((child) => {
+	if (child.IsA("Model")) {
+		activeTrackers.delete(child);
+	}
+});
+
+// Dynamic local player Rival tracking HUD synchronization
+task.spawn(() => {
+	const result = waitForLocalCar();
+	localCar = result.car;
+
+	// Populate updateRivalIndicators
+	updateRivalIndicators = () => {
+		if (!localCar) return;
+		const activeRivalName = localCar.GetAttribute("ActiveRival") as string | undefined;
+
+		for (const [otherCar, elements] of activeTrackers) {
+			const isRival = activeRivalName !== undefined && activeRivalName !== "" && otherCar.Name === activeRivalName;
+
+			if (isRival) {
+				// Style as active Rival
+				elements.trackerBillboard.Size = UDim2.fromOffset(45, 45); // Scale up significantly
+				elements.trackerBillboard.StudsOffset = new Vector3(0, 5.6, 0); // Position it higher
+				elements.arrowLabel.TextColor3 = Color3.fromRGB(255, 40, 40); // Red target tint
+
+				if (!elements.rivalLabel) {
+					const label = new Instance("TextLabel");
+					label.Size = new UDim2(1, 0, 0.4, 0);
+					label.Position = new UDim2(0, 0, -0.45, 0); // Above the arrow
+					label.BackgroundTransparency = 1;
+					label.Font = Enum.Font.GothamBold;
+					label.Text = "RIVAL";
+					label.TextScaled = true;
+					label.TextColor3 = Color3.fromRGB(255, 40, 40);
+					label.TextStrokeTransparency = 0.2;
+					label.TextStrokeColor3 = Color3.fromRGB(0, 0, 0);
+					label.Parent = elements.trackerBillboard;
+					elements.rivalLabel = label;
+				} else {
+					elements.rivalLabel.Visible = true;
+				}
+			} else {
+				// Restore original styling
+				elements.trackerBillboard.Size = UDim2.fromOffset(24, 24);
+				elements.trackerBillboard.StudsOffset = new Vector3(0, 4.8, 0);
+				const chassis = otherCar.FindFirstChild(CHASSIS_NAME);
+				if (chassis?.IsA("BasePart")) {
+					elements.arrowLabel.TextColor3 = chassis.Color;
+				}
+				if (elements.rivalLabel) {
+					elements.rivalLabel.Visible = false;
+				}
+			}
+		}
+	};
+
+	localCar.GetAttributeChangedSignal("ActiveRival").Connect(updateRivalIndicators);
+	updateRivalIndicators();
+});
+
+// RenderStepped pulse animation loop for the active Rival indicator
+RunService.RenderStepped.Connect(() => {
+	if (!localCar) return;
+	const activeRivalName = localCar.GetAttribute("ActiveRival") as string | undefined;
+	if (activeRivalName === undefined || activeRivalName === "") return;
+
+	for (const [otherCar, elements] of activeTrackers) {
+		if (otherCar.Name === activeRivalName) {
+			const pulse = (math.sin(os.clock() * 12) + 1) / 2; // pulse rate
+			elements.arrowLabel.TextTransparency = 0.1 + pulse * 0.35;
+			elements.arrowLabel.TextStrokeTransparency = 0.3 + pulse * 0.35;
+			if (elements.rivalLabel) {
+				elements.rivalLabel.TextTransparency = 0.1 + pulse * 0.35;
+				elements.rivalLabel.TextStrokeTransparency = 0.3 + pulse * 0.35;
+			}
+		}
+	}
+});
