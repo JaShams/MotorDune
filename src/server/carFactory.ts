@@ -113,6 +113,26 @@ function getOrCreateChassis(car: Model, spawnCFrame: CFrame, color: Color3) {
 	chassis.Parent = car;
 	car.PrimaryPart = chassis;
 
+	// Create a query-only taller vertical hitbox to prevent projectiles (like Bolts) from slipping underneath the chassis
+	const hitboxName = "CombatHitbox";
+	const existingHitbox = car.FindFirstChild(hitboxName);
+	const hitbox = existingHitbox?.IsA("BasePart") ? existingHitbox : createPart(hitboxName, car);
+	hitbox.Size = new Vector3(CHASSIS_SIZE.X, 5.8, CHASSIS_SIZE.Z);
+	hitbox.CFrame = chassis.CFrame.mul(new CFrame(0, -1.8, 0));
+	hitbox.Transparency = 1;
+	hitbox.CanCollide = false; // No physical collision, so no scraping
+	hitbox.CanQuery = true; // Query-enabled for spherecasts/raycasts
+	hitbox.CanTouch = false;
+	hitbox.Massless = true;
+	hitbox.Parent = car;
+
+	chassis.FindFirstChild(`${hitboxName}Weld`)?.Destroy();
+	const weld = new Instance("WeldConstraint");
+	weld.Name = `${hitboxName}Weld`;
+	weld.Part0 = chassis;
+	weld.Part1 = hitbox;
+	weld.Parent = chassis;
+
 	return chassis;
 }
 
