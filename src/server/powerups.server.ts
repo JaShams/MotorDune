@@ -1487,16 +1487,22 @@ function activateBarge(car: Model) {
 	// Expanding shockwave sphere.
 	const ring = new Instance("Part");
 	ring.Shape = Enum.PartType.Ball;
-	ring.Anchored = true;
+	ring.Anchored = false;
 	ring.CanCollide = false;
 	ring.CanQuery = false;
 	ring.CanTouch = false;
+	ring.Massless = true;
 	ring.Material = Enum.Material.Neon;
 	ring.Color = POWERUP_INFO.barge.color;
 	ring.Transparency = 0.42;
 	ring.Size = new Vector3(6, 6, 6);
-	ring.CFrame = new CFrame(chassis.Position);
+	ring.CFrame = chassis.CFrame;
 	ring.Parent = fxFolder;
+
+	const weld = new Instance("WeldConstraint");
+	weld.Part0 = chassis;
+	weld.Part1 = ring;
+	weld.Parent = ring;
 
 	const dust = new Instance("ParticleEmitter");
 	dust.Texture = "rbxasset://textures/particles/smoke_main.dds";
