@@ -401,8 +401,11 @@ export function createCarSim(car: Model, chassis: BasePart): CarSim {
 			let propulsionAccel = 0;
 			let brakeAccel = 0;
 
+			const lateralSpeed = math.abs(velocity.Dot(cf.RightVector));
+			const isSliding = lateralSpeed > 15;
+
 			if (smoothedThrottle > 0.02) {
-				if (forwardSpeed < -2) {
+				if (forwardSpeed < -2 && !isSliding) {
 					brakeAccel = smoothedThrottle * brakeAcceleration;
 				} else {
 					const limiter = 1 - math.clamp(forwardSpeed / maxForwardSpeed, 0, 1) * (1 - highSpeedPower);
@@ -411,7 +414,7 @@ export function createCarSim(car: Model, chassis: BasePart): CarSim {
 			} else if (smoothedThrottle < -0.02) {
 				const reverseInput = -smoothedThrottle;
 
-				if (forwardSpeed > 2) {
+				if (forwardSpeed > 2 && !isSliding) {
 					brakeAccel = reverseInput * brakeAcceleration;
 				} else {
 					const limiter = 1 - math.clamp(-forwardSpeed / maxReverseSpeed, 0, 1) * reverseHighSpeedFalloff;
@@ -487,7 +490,9 @@ export function createCarSim(car: Model, chassis: BasePart): CarSim {
 				// Longitudinal force: drive on powered wheels, braking on all.
 				let longForce = driveForce;
 
-				const wheelBrakeAccel = rearHandbrake ? brakeAccel + handbrakeBrakeAccel : brakeAccel;
+				const isPowerSliding = input !== undefined && handbrakeDown && math.abs(input.steer) > 0.1;
+				const activeHandbrakeBrakeAccel = isPowerSliding ? 90 : handbrakeBrakeAccel;
+				const wheelBrakeAccel = rearHandbrake ? brakeAccel + activeHandbrakeBrakeAccel : brakeAccel;
 				if (wheelBrakeAccel > 0 && math.abs(wheel.longVel) > 0.01) {
 					// Clamp braking so it can't overshoot and reverse the wheel.
 					const stoppingAccel = math.min(wheelBrakeAccel, math.abs(wheel.longVel) / dt);
@@ -499,8 +504,21 @@ export function createCarSim(car: Model, chassis: BasePart): CarSim {
 				const combined = math.sqrt(longForce * longForce + lateralForce * lateralForce);
 				if (combined > maxForce && combined > 0) {
 					const scale = maxForce / combined;
-					longForce *= scale;
-					lateralForce *= scale;
+					
+					// For driven wheels, prevent the engine drive force from dropping to zero during hard slides
+					if (isDrivenWheel(wheel.index) && driveForce !== 0) {
+						const isPowerSliding = input !== undefined && handbrakeDown && math.abs(input.steer) > 0.1;
+						const minDriveScale = isPowerSliding ? 0.75 : 0.45; // Preserve at least 75% engine power during power slides
+						const driveScale = math.max(scale, minDriveScale);
+						longForce *= driveScale;
+						
+						// Allocate the remaining grip budget to the lateral force
+						const remainingGripSq = math.max(0, maxForce * maxForce - longForce * longForce);
+						lateralForce = math.sign(lateralForce) * math.sqrt(remainingGripSq);
+					} else {
+						longForce *= scale;
+						lateralForce *= scale;
+					}
 				}
 
 				// Suspension + tyre force through this wheel's VectorForce, acting at
