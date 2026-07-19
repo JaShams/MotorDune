@@ -801,6 +801,8 @@ interface Projectile {
 	offAxisSince?: number;
 	active: boolean;
 	launchDirectionXZ?: Vector3;
+	speed?: number;
+	maxSpeed?: number;
 }
 
 const projectiles = new Array<Projectile>();
@@ -834,7 +836,7 @@ function muzzleCFrame(car: Model, backward: boolean) {
 	const chassis = getChassis(car);
 	if (!chassis) return undefined;
 	const direction = backward ? chassis.CFrame.LookVector.mul(-1) : chassis.CFrame.LookVector;
-	const origin = chassis.Position.add(direction.mul(10)).add(new Vector3(0, 1, 0)); // clear of the 8-stud nose
+	const origin = chassis.Position.add(direction.mul(chassis.Size.Z / 2 + 1.2)).add(chassis.CFrame.UpVector.mul(1.0));
 	return CFrame.lookAt(origin, origin.add(direction));
 }
 
@@ -962,15 +964,22 @@ function fireShunt(car: Model, backward: boolean) {
 	missile.SetAttribute(TARGET_OWNER_ATTR, typeIs(targetOwner, "number") ? targetOwner : 0);
 	missile.SetAttribute(GUIDANCE_ACTIVE_ATTR, false);
 
+	const chassis = getChassis(car);
+	const carSpeed = chassis ? chassis.AssemblyLinearVelocity.Dot(muzzle.LookVector) : 0;
+	const baseSpeed = SHUNT_SPEED + math.max(0, carSpeed);
+	const maxSpeed = baseSpeed + 110;
+
 	projectiles.push({
 		part: missile,
-		velocity: launchDirection.mul(SHUNT_SPEED),
+		velocity: launchDirection.mul(baseSpeed),
 		firer: car,
 		expiresAt: os.clock() + SHUNT_LIFETIME,
 		kind: "shunt",
 		target,
 		guidanceStartsAt: os.clock() + SHUNT_GUIDANCE_DELAY,
 		active: true,
+		speed: baseSpeed,
+		maxSpeed: maxSpeed,
 	});
 }
 
@@ -1126,6 +1135,13 @@ RunService.Heartbeat.Connect((dt) => {
 		const projectile = projectiles[i];
 		if (!projectile.active) continue;
 
+		if (projectile.kind === "shunt" && projectile.speed !== undefined && projectile.maxSpeed !== undefined) {
+			projectile.speed = math.min(projectile.maxSpeed, projectile.speed + 240 * dt);
+			if (projectile.velocity.Magnitude > 0.01) {
+				projectile.velocity = projectile.velocity.Unit.mul(projectile.speed);
+			}
+		}
+
 		if (now >= projectile.expiresAt || !projectile.part.IsDescendantOf(game)) {
 			// Running out the five-second lifetime is a miss, not an invisible
 			// final blast at an arbitrary point near the former target.
@@ -1183,7 +1199,7 @@ RunService.Heartbeat.Connect((dt) => {
 					const maxStep = SHUNT_TURN_RATE * dt;
 					const t = angle > 1e-3 ? math.min(1, maxStep / angle) : 1;
 					const newDir = currentDir.Lerp(desiredDir, t).Unit;
-					projectile.velocity = newDir.mul(SHUNT_SPEED);
+					projectile.velocity = newDir.mul(projectile.speed ?? SHUNT_SPEED);
 				}
 			}
 		}
