@@ -800,6 +800,7 @@ interface Projectile {
 	guidanceStartsAt?: number;
 	offAxisSince?: number;
 	active: boolean;
+	launchDirectionXZ?: Vector3;
 }
 
 const projectiles = new Array<Projectile>();
@@ -858,13 +859,21 @@ function fireBolt(car: Model, backward: boolean) {
 
 	// Inherit the car's speed so bolts always outrun the shooter.
 	const carSpeed = chassis.AssemblyLinearVelocity.Dot(muzzle.LookVector);
+	const rawLook = muzzle.LookVector;
+	let dirXZ = new Vector3(rawLook.X, 0, rawLook.Z);
+	if (dirXZ.Magnitude < 0.001) dirXZ = new Vector3(muzzle.UpVector.X, 0, muzzle.UpVector.Z);
+	if (dirXZ.Magnitude < 0.001) dirXZ = new Vector3(0, 0, -1);
+	dirXZ = dirXZ.Unit;
+
+	const speed = BOLT_SPEED + math.max(0, carSpeed);
 	projectiles.push({
 		part: bolt,
-		velocity: muzzle.LookVector.mul(BOLT_SPEED + math.max(0, carSpeed)),
+		velocity: new Vector3(dirXZ.X * speed, rawLook.Y * speed, dirXZ.Z * speed),
 		firer: car,
 		expiresAt: os.clock() + BOLT_LIFETIME,
 		kind: "bolt",
 		active: true,
+		launchDirectionXZ: dirXZ,
 	});
 }
 
@@ -1214,7 +1223,13 @@ RunService.Heartbeat.Connect((dt) => {
 			continue;
 		}
 
-		if (projectile.kind === "shunt" || projectile.kind === "bolt") {
+		if (projectile.kind === "bolt" && projectile.launchDirectionXZ) {
+			const flatDirection = projectile.launchDirectionXZ;
+			const slopeDirection = flatDirection.sub(groundNormal.mul(flatDirection.Dot(groundNormal))).Unit;
+			projectile.part.CFrame = CFrame.lookAt(nextPosition, nextPosition.add(slopeDirection), groundNormal);
+			const speedXZ = new Vector3(projectile.velocity.X, 0, projectile.velocity.Z).Magnitude;
+			projectile.velocity = flatDirection.mul(speedXZ);
+		} else if (projectile.kind === "shunt") {
 			const flatDirection = new Vector3(projectile.velocity.X, 0, projectile.velocity.Z).Unit;
 			const slopeDirection = flatDirection.sub(groundNormal.mul(flatDirection.Dot(groundNormal))).Unit;
 			projectile.part.CFrame = CFrame.lookAt(nextPosition, nextPosition.add(slopeDirection), groundNormal);
