@@ -1448,9 +1448,9 @@ function activateBarge(car: Model) {
 	if (!chassis) return;
 	playSpatialSound(chassis.Position, POWERUP_SOUND_IDS.bargeShockwave, 0.72, 0.94, 3.5);
 
-	// Expanding shockwave ring.
+	// Expanding shockwave sphere.
 	const ring = new Instance("Part");
-	ring.Shape = Enum.PartType.Cylinder;
+	ring.Shape = Enum.PartType.Ball;
 	ring.Anchored = true;
 	ring.CanCollide = false;
 	ring.CanQuery = false;
@@ -1458,8 +1458,8 @@ function activateBarge(car: Model) {
 	ring.Material = Enum.Material.Neon;
 	ring.Color = POWERUP_INFO.barge.color;
 	ring.Transparency = 0.42;
-	ring.Size = new Vector3(1.4, 6, 6);
-	ring.CFrame = new CFrame(chassis.Position).mul(CFrame.Angles(0, 0, math.rad(90)));
+	ring.Size = new Vector3(6, 6, 6);
+	ring.CFrame = new CFrame(chassis.Position);
 	ring.Parent = fxFolder;
 
 	const dust = new Instance("ParticleEmitter");
@@ -1469,13 +1469,13 @@ function activateBarge(car: Model) {
 	dust.Lifetime = new NumberRange(0.35, 0.65);
 	dust.Speed = new NumberRange(22, 42);
 	dust.Drag = 8;
-	dust.SpreadAngle = new Vector2(180, 18);
+	dust.SpreadAngle = new Vector2(180, 180);
 	dust.Size = new NumberSequence(2.5, 6);
 	dust.Parent = ring;
 	dust.Emit(32);
 
 	TweenService.Create(ring, new TweenInfo(0.52, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
-		Size: new Vector3(1.4, BARGE_RADIUS * 2, BARGE_RADIUS * 2),
+		Size: new Vector3(BARGE_RADIUS * 2, BARGE_RADIUS * 2, BARGE_RADIUS * 2),
 		Transparency: 1,
 	}).Play();
 	task.delay(0.7, () => ring.Destroy());
@@ -1487,12 +1487,24 @@ function activateBarge(car: Model) {
 		if (projectile.part.Position.sub(chassis.Position).Magnitude <= BARGE_RADIUS) cancelShunt(projectile);
 	}
 
-	for (const target of getCars()) {
-		if (target === car) continue;
+	// 3D volumetric geometric scan using OverlapParams for elevation-tolerant targets
+	const hitCars = new Set<Model>();
+	const overlapParams = new OverlapParams();
+	overlapParams.FilterType = Enum.RaycastFilterType.Exclude;
+	overlapParams.FilterDescendantsInstances = [car];
+
+	const hitParts = Workspace.GetPartBoundsInRadius(chassis.Position, BARGE_RADIUS, overlapParams);
+	for (const part of hitParts) {
+		const targetCar = carFromHit(part);
+		if (targetCar && targetCar !== car) {
+			hitCars.add(targetCar);
+		}
+	}
+
+	for (const target of hitCars) {
 		const targetChassis = getChassis(target);
 		if (!targetChassis) continue;
 		const offset = targetChassis.Position.sub(chassis.Position);
-		if (offset.Magnitude > BARGE_RADIUS) continue;
 		const flat = new Vector3(offset.X, 0, offset.Z);
 		const away = flat.Magnitude > 0.5 ? flat.Unit : chassis.CFrame.LookVector;
 		// Closer cars get shoved harder.
