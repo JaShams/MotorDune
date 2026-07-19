@@ -103,9 +103,9 @@ car.GetAttributeChangedSignal(HEALTH_ATTR).Connect(refreshHealth);
 // replicated score attributes on bot cars.
 // ---------------------------------------------------------------------------
 const board = new Instance("Frame");
-board.AnchorPoint = new Vector2(1, 0);
-board.Position = new UDim2(1, -12, 0, 12);
-board.Size = UDim2.fromOffset(210, 30);
+board.AnchorPoint = new Vector2(0, 1);
+board.Position = new UDim2(0.02, 0, 0.98, 0);
+board.Size = new UDim2(0.18, 0, 0.25, 0);
 board.BackgroundColor3 = Color3.fromRGB(12, 14, 22);
 board.BackgroundTransparency = 0.35;
 board.Parent = gui;
@@ -122,8 +122,8 @@ boardStroke.Parent = board;
 
 const boardTitle = new Instance("TextLabel");
 boardTitle.BackgroundTransparency = 1;
-boardTitle.Position = UDim2.fromOffset(0, 4);
-boardTitle.Size = new UDim2(1, 0, 0, 18);
+boardTitle.Position = new UDim2(0, 0, 0.02, 0);
+boardTitle.Size = new UDim2(1, 0, 0.12, 0);
 boardTitle.Font = Enum.Font.GothamBold;
 boardTitle.TextSize = 13;
 boardTitle.TextColor3 = Color3.fromRGB(255, 220, 60);
@@ -132,13 +132,13 @@ boardTitle.Parent = board;
 
 const rowsFrame = new Instance("Frame");
 rowsFrame.BackgroundTransparency = 1;
-rowsFrame.Position = UDim2.fromOffset(0, 24);
-rowsFrame.Size = new UDim2(1, 0, 1, -24);
+rowsFrame.Position = new UDim2(0, 0, 0.16, 0);
+rowsFrame.Size = new UDim2(1, 0, 0.84, 0);
 rowsFrame.Parent = board;
 
 const rowLayout = new Instance("UIListLayout");
 rowLayout.SortOrder = Enum.SortOrder.LayoutOrder;
-rowLayout.Padding = new UDim(0, 2);
+rowLayout.Padding = new UDim(0.005, 0);
 rowLayout.Parent = rowsFrame;
 
 const ROW_HEIGHT = 20;
@@ -179,7 +179,7 @@ function rebuildBoard() {
 	for (const [index, entry] of ipairs(entries)) {
 		const row = new Instance("Frame");
 		row.BackgroundTransparency = 1;
-		row.Size = new UDim2(1, 0, 0, ROW_HEIGHT);
+		row.Size = new UDim2(1, 0, 0.85 / entries.size(), 0);
 		row.LayoutOrder = index;
 		row.Parent = rowsFrame;
 
@@ -187,8 +187,8 @@ function rebuildBoard() {
 
 		const name = new Instance("TextLabel");
 		name.BackgroundTransparency = 1;
-		name.Position = UDim2.fromOffset(10, 0);
-		name.Size = new UDim2(1, -66, 1, 0);
+		name.Position = new UDim2(0.05, 0, 0, 0);
+		name.Size = new UDim2(0.65, 0, 1, 0);
 		name.Font = isMe ? Enum.Font.GothamBold : Enum.Font.Gotham;
 		name.TextSize = 13;
 		name.TextXAlignment = Enum.TextXAlignment.Left;
@@ -200,8 +200,8 @@ function rebuildBoard() {
 		const score = new Instance("TextLabel");
 		score.BackgroundTransparency = 1;
 		score.AnchorPoint = new Vector2(1, 0);
-		score.Position = new UDim2(1, -10, 0, 0);
-		score.Size = UDim2.fromOffset(50, ROW_HEIGHT);
+		score.Position = new UDim2(0.95, 0, 0, 0);
+		score.Size = new UDim2(0.25, 0, 1, 0);
 		score.Font = Enum.Font.GothamBold;
 		score.TextSize = 13;
 		score.TextXAlignment = Enum.TextXAlignment.Right;
@@ -210,7 +210,7 @@ function rebuildBoard() {
 		score.Parent = row;
 	}
 
-	board.Size = UDim2.fromOffset(210, 30 + entries.size() * (ROW_HEIGHT + 2));
+	board.Size = new UDim2(0.18, 0, 0.04 + entries.size() * 0.035, 0);
 }
 
 // Leaderstats replicate a beat after the player does; re-render once the
@@ -371,11 +371,160 @@ RunService.RenderStepped.Connect(() => {
 });
 
 // ---------------------------------------------------------------------------
+// CIRCULAR MINI-MAP — top-right corner; tracks local car and bots.
+// ---------------------------------------------------------------------------
+const miniMapFrame = new Instance("Frame");
+miniMapFrame.Name = "MiniMap";
+miniMapFrame.AnchorPoint = new Vector2(1, 0);
+miniMapFrame.Position = new UDim2(0.98, 0, 0.02, 0);
+miniMapFrame.Size = new UDim2(0.14, 0, 0.14, 0);
+miniMapFrame.BackgroundColor3 = Color3.fromRGB(12, 14, 22);
+miniMapFrame.BackgroundTransparency = 0.35;
+miniMapFrame.ClipsDescendants = true;
+miniMapFrame.Parent = gui;
+
+const minimapRatio = new Instance("UIAspectRatioConstraint");
+minimapRatio.AspectRatio = 1.0;
+minimapRatio.Parent = miniMapFrame;
+
+const minimapCorner = new Instance("UICorner");
+minimapCorner.CornerRadius = new UDim(0.5, 0);
+minimapCorner.Parent = miniMapFrame;
+
+const minimapStroke = new Instance("UIStroke");
+minimapStroke.Thickness = 2;
+minimapStroke.Color = Color3.fromRGB(70, 80, 100);
+minimapStroke.Transparency = 0.4;
+minimapStroke.Parent = miniMapFrame;
+
+// Center/Player dot (arrow or circle representing local player)
+const playerDot = new Instance("Frame");
+playerDot.Name = "PlayerDot";
+playerDot.AnchorPoint = new Vector2(0.5, 0.5);
+playerDot.Position = new UDim2(0.5, 0, 0.5, 0);
+playerDot.Size = new UDim2(0.08, 0, 0.08, 0);
+playerDot.BackgroundColor3 = Color3.fromRGB(50, 220, 90); // Green
+playerDot.BorderSizePixel = 0;
+playerDot.ZIndex = 3;
+playerDot.Parent = miniMapFrame;
+
+const playerDotRatio = new Instance("UIAspectRatioConstraint");
+playerDotRatio.AspectRatio = 1.0;
+playerDotRatio.Parent = playerDot;
+
+const playerDotCorner = new Instance("UICorner");
+playerDotCorner.CornerRadius = new UDim(0.5, 0);
+playerDotCorner.Parent = playerDot;
+
+// Active dots tracking
+const carDots = new Map<Model, Frame>();
+
+function getOtherActiveCars() {
+	const list = new Array<Model>();
+	for (const child of Workspace.GetChildren()) {
+		if (child.IsA("Model") && child !== car && child.FindFirstChild(CHASSIS_NAME)) {
+			list.push(child);
+		}
+	}
+	return list;
+}
+
+function updateMiniMap(dt: number) {
+	if (!isDriving()) {
+		miniMapFrame.Visible = false;
+		return;
+	}
+	miniMapFrame.Visible = true;
+
+	const myCF = chassis.CFrame;
+	const myPos = myCF.Position;
+	const forwardSpeed = math.abs(chassis.AssemblyLinearVelocity.Dot(myCF.LookVector));
+	
+	// Adaptive zoom: scope widens as vehicle accelerates
+	const radarRange = 120 + math.clamp(forwardSpeed / 100, 0, 1) * 230;
+
+	// Update player dot rotation to align with camera/chassis heading
+	const forward2D = new Vector2(myCF.LookVector.X, myCF.LookVector.Z);
+	if (forward2D.Magnitude > 0.01) {
+		const norm = forward2D.Unit;
+		const angle = math.atan2(norm.X, -norm.Y);
+		playerDot.Rotation = math.deg(angle);
+	}
+
+	const activeCars = getOtherActiveCars();
+	const activeSet = new Set(activeCars);
+
+	// Cleanup old dots
+	for (const [otherCar, dot] of carDots) {
+		if (!activeSet.has(otherCar)) {
+			dot.Destroy();
+			carDots.delete(otherCar);
+		}
+	}
+
+	// Update/create dots
+	for (const otherCar of activeCars) {
+		const otherChassis = otherCar.FindFirstChild(CHASSIS_NAME) as BasePart | undefined;
+		if (!otherChassis) continue;
+
+		let dot = carDots.get(otherCar);
+		if (!dot) {
+			dot = new Instance("Frame");
+			dot.AnchorPoint = new Vector2(0.5, 0.5);
+			dot.Size = new UDim2(0.07, 0, 0.07, 0);
+			dot.BorderSizePixel = 0;
+			dot.ZIndex = 2;
+			dot.Parent = miniMapFrame;
+
+			const dotRatio = new Instance("UIAspectRatioConstraint");
+			dotRatio.AspectRatio = 1.0;
+			dotRatio.Parent = dot;
+
+			const dotCorner = new Instance("UICorner");
+			dotCorner.CornerRadius = new UDim(0.5, 0);
+			dotCorner.Parent = dot;
+
+			carDots.set(otherCar, dot);
+		}
+
+		// Calculate relative local offset on X/Z plane
+		const rel = myCF.PointToObjectSpace(otherChassis.Position);
+		
+		// Map X and Z coordinates to relative screen percentage
+		let dx = rel.X / radarRange;
+		let dy = rel.Z / radarRange; // local +Z is behind, maps to screen +Y (down)
+		
+		const dist = math.sqrt(dx * dx + dy * dy);
+		if (dist > 0.46) {
+			// Clamp to radar circle boundary
+			dx = (dx / dist) * 0.46;
+			dy = (dy / dist) * 0.46;
+			dot.BackgroundTransparency = 0.5; // lower opacity when clamped
+		} else {
+			dot.BackgroundTransparency = 0;
+		}
+
+		dot.Position = new UDim2(0.5 + dx, 0, 0.5 + dy, 0);
+
+		// Dynamic color assignment: Active Rival gets red; others get team/chassis color
+		const isRival = car.GetAttribute("ActiveRival") === otherCar.Name;
+		if (isRival) {
+			dot.BackgroundColor3 = Color3.fromRGB(255, 50, 50); // Red
+		} else {
+			dot.BackgroundColor3 = otherChassis.Color;
+		}
+	}
+}
+
+RunService.RenderStepped.Connect(updateMiniMap);
+
+// ---------------------------------------------------------------------------
 // Show the driving HUD only while in the car (the leaderboard stays up).
 // ---------------------------------------------------------------------------
 function refreshVisibility() {
 	const driving = isDriving();
 	healthFrame.Visible = driving;
+	miniMapFrame.Visible = driving;
 	if (!driving) threatPill.Visible = false;
 }
 
