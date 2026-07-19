@@ -18,10 +18,10 @@ export interface PowerupInfo {
 
 export const POWERUP_INFO: Record<PowerupType, PowerupInfo> = {
 	shield: { color: Color3.fromRGB(80, 220, 255), emoji: "🛡️", glyph: "⬡", label: "Shield", directional: false },
-	bolt: { color: Color3.fromRGB(255, 70, 70), emoji: "⚡", glyph: "ϟ", label: "Bolt", directional: true },
-	shunt: { color: Color3.fromRGB(255, 0, 255), emoji: "🚀", glyph: "➤", label: "Shunt", directional: true },
+	bolt: { color: Color3.fromRGB(255, 105, 180), emoji: "⚡", glyph: "ϟ", label: "Bolt", directional: true },
+	shunt: { color: Color3.fromRGB(180, 0, 0), emoji: "🚀", glyph: "➤", label: "Shunt", directional: true },
 	nitro: { color: Color3.fromRGB(190, 90, 255), emoji: "🔥", glyph: "▲", label: "Nitro", directional: false },
-	mine: { color: Color3.fromRGB(255, 220, 60), emoji: "💣", glyph: "✹", label: "Mine", directional: true },
+	mine: { color: Color3.fromRGB(255, 100, 0), emoji: "💣", glyph: "✹", label: "Mine", directional: true },
 	barge: { color: Color3.fromRGB(70, 120, 255), emoji: "💥", glyph: "◎", label: "Barge", directional: false },
 };
 
