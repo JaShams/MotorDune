@@ -69,7 +69,7 @@ import { recordHit, recordPickup } from "./analytics";
 const COLLECT_RADIUS = 12; // scaled with the buggy-sized chassis (16 studs long)
 
 const BOLT_SPEED = 380;
-const BOLT_LIFETIME = 1.6;
+const BOLT_LIFETIME = 8.0;
 const BOLT_KNOCK = 26; // delta-v (studs/s) given to a struck car
 
 const SHUNT_KNOCK = 52;

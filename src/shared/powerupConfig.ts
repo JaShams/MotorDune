@@ -19,7 +19,7 @@ export interface PowerupInfo {
 export const POWERUP_INFO: Record<PowerupType, PowerupInfo> = {
 	shield: { color: Color3.fromRGB(80, 220, 255), emoji: "🛡️", glyph: "⬡", label: "Shield", directional: false },
 	bolt: { color: Color3.fromRGB(255, 70, 70), emoji: "⚡", glyph: "ϟ", label: "Bolt", directional: true },
-	shunt: { color: Color3.fromRGB(255, 160, 40), emoji: "🚀", glyph: "➤", label: "Shunt", directional: true },
+	shunt: { color: Color3.fromRGB(255, 0, 255), emoji: "🚀", glyph: "➤", label: "Shunt", directional: true },
 	nitro: { color: Color3.fromRGB(190, 90, 255), emoji: "🔥", glyph: "▲", label: "Nitro", directional: false },
 	mine: { color: Color3.fromRGB(255, 220, 60), emoji: "💣", glyph: "✹", label: "Mine", directional: true },
 	barge: { color: Color3.fromRGB(70, 120, 255), emoji: "💥", glyph: "◎", label: "Barge", directional: false },
@@ -53,7 +53,7 @@ export const MINE_HOVER_HEIGHT = 3.2;
 // enough to punish a gentle weave but loosely enough for a committed drift,
 // terrain break, or hard perpendicular cut to shed the lock.
 export const SHUNT_SPEED = 170;
-export const SHUNT_LIFETIME = 5;
+export const SHUNT_LIFETIME = 10;
 export const SHUNT_ACQUIRE_HALF_ANGLE = math.rad(55);
 export const SHUNT_GUIDANCE_DELAY = 0.35;
 export const SHUNT_TURN_RATE = math.rad(125);
