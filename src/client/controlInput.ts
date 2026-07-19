@@ -38,7 +38,7 @@ let sDown = false;
 let aDown = false;
 let dDown = false;
 let cDown = false;
-let shiftDown = false;
+let spaceDown = false;
 let controlDown = false;
 let controllerThrottle = 0;
 let controllerBrake = 0;
@@ -64,7 +64,7 @@ function setKeyboardHeld(key: Enum.KeyCode, held: boolean) {
 	if (key === Enum.KeyCode.A) aDown = held;
 	if (key === Enum.KeyCode.D) dDown = held;
 	if (key === Enum.KeyCode.C) cDown = held;
-	if (key === Enum.KeyCode.LeftShift || key === Enum.KeyCode.RightShift) shiftDown = held;
+	if (key === Enum.KeyCode.Space) spaceDown = held;
 	if (key === Enum.KeyCode.LeftControl || key === Enum.KeyCode.RightControl) controlDown = held;
 }
 
@@ -83,9 +83,18 @@ UserInputService.InputBegan.Connect((input) => {
 	// those explicit blockers are absent.
 	if (gameplayAvailable) {
 		if (!gamepadInput) setKeyboardHeld(key, true);
-		if (key === Enum.KeyCode.One) emit(fireListeners, 1);
-		if (key === Enum.KeyCode.Two) emit(fireListeners, 2);
-		if (key === Enum.KeyCode.Three) emit(fireListeners, 3);
+
+		if (input.UserInputType === Enum.UserInputType.MouseButton1) {
+			emit(fireListeners, undefined);
+		}
+		if (input.UserInputType === Enum.UserInputType.MouseButton2) {
+			emit(cycleListeners);
+		}
+
+		if (key === Enum.KeyCode.One || key === Enum.KeyCode.J) emit(fireListeners, 1);
+		if (key === Enum.KeyCode.Two || key === Enum.KeyCode.K) emit(fireListeners, 2);
+		if (key === Enum.KeyCode.Three || key === Enum.KeyCode.L) emit(fireListeners, 3);
+
 		if (key === Enum.KeyCode.R) emit(resetListeners);
 
 		if (gamepadInput) {
@@ -164,7 +173,7 @@ export function getDriveInput(): CarDriveInput {
 	return {
 		throttle: (wDown ? 1 : 0) + (sDown ? -1 : 0),
 		steer: (aDown ? 1 : 0) + (dDown ? -1 : 0),
-		handbrake: shiftDown,
+		handbrake: spaceDown,
 	};
 }
 
@@ -184,7 +193,7 @@ export function setGameplayInputBlocked(blocked: boolean) {
 	if (blocked) {
 		controllerHandbrake = false;
 		controllerLookBack = false;
-		shiftDown = false;
+		spaceDown = false;
 		controlDown = false;
 	}
 }
