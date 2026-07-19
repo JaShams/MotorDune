@@ -40,6 +40,8 @@ interface CarVisual {
 	wheels: BasePart[];
 	rims: BasePart[];
 	dust: Array<ParticleEmitter | undefined>;
+	sparks: Array<ParticleEmitter | undefined>;
+	trails: Array<Trail | undefined>;
 	dustAccumulator: number[];
 	rayParams: RaycastParams;
 	rollAngles: number[]; // forward-positive roll distance, radians
@@ -111,6 +113,73 @@ function getOrCreateDust(wheel: BasePart) {
 	return dust;
 }
 
+function getOrCreateDriftSparks(wheel: BasePart) {
+	const existingAttachment = wheel.FindFirstChild("DustAttachment");
+	const attachment = existingAttachment?.IsA("Attachment") ? existingAttachment : new Instance("Attachment");
+	attachment.Name = "DustAttachment";
+	attachment.Parent = wheel;
+
+	const existingSparks = attachment.FindFirstChild("DriftSparks");
+	if (existingSparks?.IsA("ParticleEmitter")) return existingSparks;
+
+	const sparks = new Instance("ParticleEmitter");
+	sparks.Name = "DriftSparks";
+	sparks.Texture = "rbxasset://textures/particles/sparkles_main.dds";
+	sparks.Enabled = false;
+	sparks.Rate = 0;
+	sparks.Lifetime = new NumberRange(0.2, 0.45);
+	sparks.Speed = new NumberRange(14, 25);
+	sparks.Drag = 5;
+	sparks.SpreadAngle = new Vector2(35, 35);
+	sparks.EmissionDirection = Enum.NormalId.Back;
+	sparks.Acceleration = new Vector3(0, -8, 0);
+	sparks.Color = new ColorSequence([
+		new ColorSequenceKeypoint(0, Color3.fromRGB(0, 180, 255)), // blue
+		new ColorSequenceKeypoint(0.5, Color3.fromRGB(255, 0, 255)), // magenta/purple
+		new ColorSequenceKeypoint(1, Color3.fromRGB(255, 220, 0)), // gold/yellow
+	]);
+	sparks.Size = new NumberSequence([
+		new NumberSequenceKeypoint(0, 0.8),
+		new NumberSequenceKeypoint(1, 0.15),
+	]);
+	sparks.Transparency = new NumberSequence([
+		new NumberSequenceKeypoint(0, 0),
+		new NumberSequenceKeypoint(1, 1),
+	]);
+	sparks.Parent = attachment;
+	return sparks;
+}
+
+function getOrCreateSkidTrail(wheel: BasePart) {
+	const existingTrail = wheel.FindFirstChild("SkidTrail");
+	if (existingTrail?.IsA("Trail")) return existingTrail;
+
+	const att0 = new Instance("Attachment");
+	att0.Name = "SkidAtt0";
+	att0.Position = new Vector3(-0.55, -WHEEL_RADIUS, 0); // bottom left of wheel
+	att0.Parent = wheel;
+
+	const att1 = new Instance("Attachment");
+	att1.Name = "SkidAtt1";
+	att1.Position = new Vector3(0.55, -WHEEL_RADIUS, 0); // bottom right of wheel
+	att1.Parent = wheel;
+
+	const trail = new Instance("Trail");
+	trail.Name = "SkidTrail";
+	trail.Attachment0 = att0;
+	trail.Attachment1 = att1;
+	trail.FaceCamera = true;
+	trail.Color = new ColorSequence(Color3.fromRGB(25, 25, 25));
+	trail.Transparency = new NumberSequence([
+		new NumberSequenceKeypoint(0, 0.35),
+		new NumberSequenceKeypoint(1, 1),
+	]);
+	trail.Lifetime = 2.0;
+	trail.Enabled = false;
+	trail.Parent = wheel;
+	return trail;
+}
+
 // Adopt any car model that shows up in the workspace (the player's car and
 // the bots replicate from the server at boot; the timeouts skip over
 // non-car models like the arena and player characters).
@@ -145,6 +214,8 @@ function tryRegister(child: Instance) {
 			wheels,
 			rims: wheels.map((wheel) => getOrCreateRim(child, wheel)),
 			dust: wheels.map((wheel, index) => (index >= 2 ? getOrCreateDust(wheel) : undefined)),
+			sparks: wheels.map((wheel, index) => (index >= 2 ? getOrCreateDriftSparks(wheel) : undefined)),
+			trails: wheels.map((wheel, index) => (index >= 2 ? getOrCreateSkidTrail(wheel) : undefined)),
 			dustAccumulator: [0, 0, 0, 0],
 			rayParams,
 			rollAngles: [0, 0, 0, 0],
@@ -249,6 +320,24 @@ RunService.RenderStepped.Connect((dt) => {
 				} else {
 					visual.dustAccumulator[i] = 0;
 				}
+			}
+
+			const drifting = car.GetAttribute("IsDrifting") === true;
+			const sparks = visual.sparks[i];
+			const trail = visual.trails[i];
+
+			if (sparks) {
+				if (drifting) {
+					sparks.Enabled = true;
+					sparks.Rate = 55;
+				} else {
+					sparks.Enabled = false;
+					sparks.Rate = 0;
+				}
+			}
+
+			if (trail) {
+				trail.Enabled = drifting && grounded;
 			}
 		}
 	}

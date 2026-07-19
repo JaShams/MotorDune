@@ -455,6 +455,7 @@ interface Pad {
 	kind: PowerupType;
 	position: Vector3;
 	active: boolean;
+	isMystery?: boolean;
 }
 
 const pads = new Array<Pad>();
@@ -474,8 +475,14 @@ function groundHeight(x: number, z: number) {
 	return hit ? hit.Position.Y : 0;
 }
 
-function createPad(position: Vector3, kind: PowerupType) {
-	const info = POWERUP_INFO[kind];
+function createPad(position: Vector3, kind: PowerupType, isMystery = false) {
+	const info = isMystery ? {
+		color: Color3.fromRGB(255, 215, 0), // Gold
+		glyph: "?",
+		emoji: "❓",
+		label: "Mystery",
+		directional: false
+	} : POWERUP_INFO[kind];
 
 	const model = new Instance("Model");
 	model.Name = "Pickup";
@@ -593,13 +600,14 @@ function createPad(position: Vector3, kind: PowerupType) {
 
 	model.Parent = pickupsFolder;
 
-	pads.push({ model, core, light, kind, position, active: true });
+	pads.push({ model, core, light, kind, position, active: true, isMystery });
 }
 
 function setPadVisible(pad: Pad, visible: boolean) {
 	pad.active = visible;
 	pad.model.SetAttribute("Active", visible);
-	pad.model.SetAttribute("RespawnAt", visible ? 0 : Workspace.GetServerTimeNow() + PAD_RESPAWN_SECONDS);
+	const respawnTime = pad.isMystery ? 30 : PAD_RESPAWN_SECONDS;
+	pad.model.SetAttribute("RespawnAt", visible ? 0 : Workspace.GetServerTimeNow() + respawnTime);
 	if (!visible) pad.core.FindFirstChildOfClass("ParticleEmitter")?.Emit(18);
 	for (const descendant of pad.model.GetDescendants()) {
 		if (descendant.IsA("BasePart")) {
@@ -687,6 +695,11 @@ function spawnPads() {
 			addPad(math.cos(angle) * ringRadius, math.sin(angle) * ringRadius);
 		}
 	}
+
+	// Spawn a special mystery powerup pad at the center of the arena
+	const centerY = groundYAt(0, 0);
+	const centerPosition = new Vector3(0, centerY + float + 1.0, 0); // floats slightly higher
+	createPad(centerPosition, "shield", true); // kind placeholder, isMystery = true
 }
 
 // Poll pad pickups (deterministic, immune to Touched flakiness at 150 studs/s).
@@ -702,11 +715,16 @@ function startPickupLoop() {
 					const chassis = getChassis(car);
 					if (!chassis) continue;
 					if (chassis.Position.sub(pad.position).Magnitude > COLLECT_RADIUS) continue;
-					if (!addToInventory(car, pad.kind)) continue; // inventory full: leave the pad
+					const kindToGive = pad.isMystery 
+						? POWERUP_TYPES[math.floor(math.random() * POWERUP_TYPES.size())] 
+						: pad.kind;
+
+					if (!addToInventory(car, kindToGive)) continue; // inventory full: leave the pad
 
 					recordPickup(car);
 					setPadVisible(pad, false);
-					task.delay(PAD_RESPAWN_SECONDS, () => setPadVisible(pad, true));
+					const respawnTime = pad.isMystery ? 30 : PAD_RESPAWN_SECONDS;
+					task.delay(respawnTime, () => setPadVisible(pad, true));
 					break;
 				}
 			}
