@@ -829,6 +829,15 @@ function carFromHit(instance: Instance): Model | undefined {
 	for (const car of getCars()) {
 		if (instance.IsDescendantOf(car)) return car;
 	}
+	const character = instance.FindFirstAncestorOfClass("Model");
+	if (character) {
+		const player = Players.GetPlayerFromCharacter(character);
+		if (player) {
+			for (const car of getCars()) {
+				if (car.GetAttribute(OWNER_USER_ID_ATTR) === player.UserId) return car;
+			}
+		}
+	}
 	return undefined;
 }
 
@@ -1249,8 +1258,7 @@ RunService.Heartbeat.Connect((dt) => {
 			groundNormal = ground.normal;
 		}
 		const sweptStep = nextPosition.sub(projectile.part.Position);
-		// Bolts sweep their own width (see BOLT_HIT_RADIUS); shunts keep the thin
-		// ray for walls/terrain and rely on the proximity fuse for cars.
+		// Bolts sweep their own width (see BOLT_HIT_RADIUS); shunts use a robust spherecast to ensure wall hit registration.
 		const hit =
 			projectile.kind === "bolt"
 				? Workspace.Spherecast(
@@ -1259,7 +1267,12 @@ RunService.Heartbeat.Connect((dt) => {
 						sweptStep,
 						shuntPathParams(projectile.firer),
 					)
-				: Workspace.Raycast(projectile.part.Position, sweptStep, shuntPathParams(projectile.firer));
+				: Workspace.Spherecast(
+						projectile.part.Position,
+						3.0,
+						sweptStep,
+						shuntPathParams(projectile.firer),
+					);
 
 		if (hit) {
 			const struckCar = carFromHit(hit.Instance);
@@ -1599,12 +1612,15 @@ function activateBarge(car: Model) {
 	overlapParams.FilterDescendantsInstances = [car];
 
 	const hitParts = Workspace.GetPartBoundsInRadius(chassis.Position, BARGE_RADIUS, overlapParams);
+	print("[Barge debug] Fired by", car.Name, "at pos", chassis.Position, "hitParts size:", hitParts.size());
 	for (const part of hitParts) {
 		const targetCar = carFromHit(part);
+		print("  Part hit:", part.Name, "Parent:", part.Parent?.Name, "Resolved car:", targetCar?.Name);
 		if (targetCar && targetCar !== car) {
 			hitCars.add(targetCar);
 		}
 	}
+	print("[Barge debug] hitCars size:", hitCars.size());
 
 	for (const target of hitCars) {
 		const targetChassis = getChassis(target);
