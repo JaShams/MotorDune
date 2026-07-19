@@ -1,5 +1,6 @@
 import { Workspace } from "@rbxts/services";
 import {
+	CHASSIS_NAME,
 	MAX_STEER_ANGLE,
 	STEER_MAX_LAT_ACCEL,
 	SUSPENSION_LENGTH,
@@ -213,6 +214,37 @@ export interface CarSim {
 	throttle: number; // smoothed, -1..1
 	handbrake: boolean;
 	wheelSpin: number[]; // per-wheel 0..1, indices per WHEEL_OFFSETS
+}
+
+function segmentSegmentClosest3D(a1: Vector3, a2: Vector3, b1: Vector3, b2: Vector3) {
+	const da = new Vector2(a2.X - a1.X, a2.Z - a1.Z);
+	const db = new Vector2(b2.X - b1.X, b2.Z - b1.Z);
+	const r = new Vector2(a1.X - b1.X, a1.Z - b1.Z);
+
+	const sa = da.Dot(da);
+	const sb = db.Dot(db);
+	const f = da.Dot(db);
+
+	let tA = 0;
+	let tB = 0;
+
+	const denom = sa * sb - f * f;
+	if (denom > 1e-6) {
+		tA = math.clamp((da.Dot(r) * sb - f * db.Dot(r)) / denom, 0, 1);
+	} else {
+		tA = 0;
+	}
+
+	const bProj = new Vector2(a1.X + da.X * tA - b1.X, a1.Z + da.Y * tA - b1.Z);
+	tB = math.clamp(db.Dot(bProj) / (sb > 1e-6 ? sb : 1), 0, 1);
+
+	const aProj = new Vector2(b1.X + db.X * tB - a1.X, b1.Z + db.Y * tB - a1.Z);
+	tA = math.clamp(da.Dot(aProj) / (sa > 1e-6 ? sa : 1), 0, 1);
+
+	const closestA = a1.add(a2.sub(a1).mul(tA));
+	const closestB = b1.add(b2.sub(b1).mul(tB));
+
+	return { closestA, closestB };
 }
 
 export function createCarSim(car: Model, chassis: BasePart): CarSim {
@@ -649,6 +681,54 @@ export function createCarSim(car: Model, chassis: BasePart): CarSim {
 			}
 		}
 
+		// --- Arcade vehicle-vehicle anti-stacking and cylindrical walls constraint ----
+		let isOverlapping = false;
+		const myCF = chassis.CFrame;
+		const myPos = myCF.Position;
+		const myLook = myCF.LookVector;
+		const rearA = myPos.sub(myLook.mul(4.0));
+		const frontA = myPos.add(myLook.mul(4.0));
+		const minClearance = 9.2; // 2 * radius (each capsule radius = 4.6 studs)
+
+		// Scan workspace children for opponent cars
+		for (const other of Workspace.GetChildren()) {
+			if (other.IsA("Model") && other !== car && other.FindFirstChild(CHASSIS_NAME)) {
+				const otherChassis = other.FindFirstChild(CHASSIS_NAME) as BasePart | undefined;
+				if (!otherChassis) continue;
+
+				const otherCF = otherChassis.CFrame;
+				const otherPos = otherChassis.Position;
+				const otherLook = otherCF.LookVector;
+				const rearB = otherPos.sub(otherLook.mul(4.0));
+				const frontB = otherPos.add(otherLook.mul(4.0));
+
+				const { closestA, closestB } = segmentSegmentClosest3D(rearA, frontA, rearB, frontB);
+				const diff = closestA.sub(closestB);
+				const diff2D = new Vector3(diff.X, 0, diff.Z);
+				const dist2D = diff2D.Magnitude;
+
+				// Overlap condition: 2D horizontal overlap and Y-axis proximity
+				if (dist2D < minClearance && math.abs(myPos.Y - otherPos.Y) < 5.2) {
+					isOverlapping = true;
+					const overlapDepth = minClearance - dist2D;
+					const pushDir = dist2D > 0.05 ? diff2D.Unit : myCF.RightVector;
+					
+					// 1. High-velocity lateral impulse to push vehicles apart
+					const pushImpulse = pushDir.mul(overlapDepth * 36);
+					chassis.AssemblyLinearVelocity = chassis.AssemblyLinearVelocity.add(pushImpulse);
+
+					// 2. Reset Y-axis upward momentum relative to the other car
+					if (chassis.AssemblyLinearVelocity.Y > 0) {
+						chassis.AssemblyLinearVelocity = new Vector3(
+							chassis.AssemblyLinearVelocity.X,
+							0,
+							chassis.AssemblyLinearVelocity.Z
+						);
+					}
+				}
+			}
+		}
+
 		// --- Anti-flip / leveling & Ground Normal Alignment --------------------
 		const groundRayParams = new RaycastParams();
 		groundRayParams.FilterType = Enum.RaycastFilterType.Include;
@@ -667,7 +747,14 @@ export function createCarSim(car: Model, chassis: BasePart): CarSim {
 		const tiltAxis = cf.UpVector.Cross(targetUp);
 
 		// Significantly increased alignment torque (from 28 to 95) for rapid upright realignment.
-		const activeUprightStrength = 95;
+		let activeUprightStrength = 95;
+		if (isOverlapping) {
+			activeUprightStrength = 360; // Strict orientation lock during collisions
+			// Heavy dampening of pitch and roll to keep the chassis flat
+			const localAngVel = cf.VectorToObjectSpace(chassis.AssemblyAngularVelocity);
+			const dampedLocalAngVel = new Vector3(localAngVel.X * 0.02, localAngVel.Y, localAngVel.Z * 0.02);
+			chassis.AssemblyAngularVelocity = cf.VectorToWorldSpace(dampedLocalAngVel);
+		}
 		if (tiltAxis.Magnitude > 0.01) {
 			chassis.ApplyAngularImpulse(tiltAxis.mul(activeUprightStrength * mass * dt));
 		}
